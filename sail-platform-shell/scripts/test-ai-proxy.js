@@ -160,35 +160,61 @@ async function main() {
     kv('SUPABASE_URL', SUPABASE_URL)
     kv('PROXY_URL',    PROXY_URL)
 
-    const minimalBody = JSON.stringify({
+    // Probes 1 + 2 use a sandbox shape because they never reach the
+    // insert path (they bounce at auth) — sandbox keeps them
+    // schema-safe regardless of how the auth gate evolves.
+    const unauthBody = JSON.stringify({
         prompt:         'Probe: respond with the literal string "pong".',
         system:         'You are a test echo. Respond exactly with "pong".',
         app_source:     'sandbox',
         request_origin: 'api',
-        // sandbox is in ENFORCEMENT_BYPASS_SOURCES, so school_id can be
-        // omitted without tripping the school_id_not_null CHECK. Probes
-        // 1 + 2 never reach the insert path anyway (they bounce at auth).
-        metadata: { surface: 'harness', feature: 'ai_proxy_probe' },
+        metadata: { surface: 'harness', feature: 'ai_proxy_probe_unauth' },
+    })
+
+    // Probe 3 uses the REAL production payload shape — app_source +
+    // request_origin + school_id exactly as Helm's services/ai.js
+    // assembles them in pages/Assignments.jsx. This validates the
+    // production code path, not just the schema. A success here
+    // means: app gating works, consent gate works, school linkage
+    // works, the exact shape Helm sends works. Sandbox would have
+    // bypassed app gating and given a false greenlight.
+    const APP_SOURCE_3   = process.env.HARNESS_APP_SOURCE   || 'ai_grading'
+    const REQUEST_ORIGIN = process.env.HARNESS_REQUEST_ORIGIN || 'helm_ui'
+    const SCHOOL_ID      = process.env.HARNESS_SCHOOL_ID || null
+    const authedBody = JSON.stringify({
+        prompt:         'Probe: respond with the literal string "pong".',
+        system:         'You are a test echo. Respond exactly with "pong".',
+        app_source:     APP_SOURCE_3,
+        request_origin: REQUEST_ORIGIN,
+        school_id:      SCHOOL_ID,
+        metadata: {
+            surface: 'harness.helm.assignments',
+            feature: 'ai_proxy_probe_authed',
+            school_id: SCHOOL_ID,
+        },
     })
 
     const r1 = await probe('1) NO auth header (expect 401 DENIED + log auth_missing)', {
         authorization: null,
-        body:          minimalBody,
+        body:          unauthBody,
     })
 
     const r2 = await probe('2) BOGUS auth header (expect 401 DENIED + log auth_invalid)', {
         authorization: 'Bearer bogus.jwt.token',
-        body:          minimalBody,
+        body:          unauthBody,
     })
 
     let r3 = null
     const auth = await authenticate()
     if (auth?.token) {
         header(`AUTH OK via ${auth.source}${auth.email ? ` (${auth.email})` : ''}`)
-        kv('user_id', auth.user_id ?? '(unknown)')
-        r3 = await probe('3) AUTHENTICATED (expect 200 SUCCESS + log insert_success)', {
+        kv('user_id',        auth.user_id ?? '(unknown)')
+        kv('app_source',     APP_SOURCE_3)
+        kv('request_origin', REQUEST_ORIGIN)
+        kv('school_id',      SCHOOL_ID ?? '(null — will trip school_id_not_null CHECK if app_source != sandbox)')
+        r3 = await probe('3) AUTHENTICATED + ai_grading payload (expect 200 SUCCESS + insert row)', {
             authorization: `Bearer ${auth.token}`,
-            body:          minimalBody,
+            body:          authedBody,
         })
     } else {
         header('PROBE 3 SKIPPED — set HARNESS_USER_EMAIL+HARNESS_USER_PASSWORD or HARNESS_ACCESS_TOKEN to run')
