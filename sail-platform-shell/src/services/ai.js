@@ -171,9 +171,27 @@ export async function callAI({
     } catch (sailErr) {
         const isAppNotEnabled = sailErr?.code === 'APP_NOT_ENABLED'
 
+        // Phase B3 (Stage 2 Helm stabilisation, 2026-05-07) — explicit
+        // strict-mode runtime guard. The fallback branch below is the
+        // ONLY code path that calls invokeNetlifyFallback in this file.
+        // Belt-and-braces: throw a loud, unambiguous error if anyone
+        // ever tries to route around the gate while strict mode is on.
+        // This makes a refactor-induced silent-fallback impossible —
+        // any "fallback was attempted under strict mode" lands in the
+        // browser console and the network log.
+        if (STRICT_AI_PROXY && isAppNotEnabled) {
+            throw new Error(
+                `[STRICT_AI_PROXY] fallback blocked. ` +
+                `school_id=${schoolId ?? '(null)'} got APP_NOT_ENABLED from ai-proxy v9 ` +
+                `but VITE_STRICT_AI_PROXY=true forbids the legacy Netlify path. ` +
+                `Either enable ai_grading in school_apps for this school, OR ` +
+                `unset VITE_STRICT_AI_PROXY to re-allow the fallback (NOT RECOMMENDED).`,
+            )
+        }
+
         if (!STRICT_AI_PROXY && isAppNotEnabled) {
             console.warn(
-                '[ai-proxy v4] APP_NOT_ENABLED — falling back to Netlify '
+                '[ai-proxy v9] APP_NOT_ENABLED — falling back to Netlify '
                 + '(school not yet enabled for ai_grading; STRICT_AI_PROXY=false)',
             )
             return await invokeNetlifyFallback({
