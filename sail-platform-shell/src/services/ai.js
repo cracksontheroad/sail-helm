@@ -48,54 +48,62 @@ import { supabase } from '../lib/supabaseClient'
 const NETLIFY_AI_PROXY_URL = '/.netlify/functions/ai-proxy'
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 2 Slice 13 — Strict proxy mode (env-driven, NOT YET ACTIVE).
+// Phase B4-prep (Stage 2 Helm stabilisation, 2026-05-07) — feature-flagged
+// proxy-only mode + OPENAI_API_KEY safety override + structured outcome logs.
 //
-// When false (default): APP_NOT_ENABLED 403 from ai-proxy v4 falls back to
-//   the legacy Netlify function so disabled schools keep working while
-//   they're brought online via Bridge admin toggles. This is the Slice 11
-//   posture.
+// Single canonical flag: `VITE_USE_AI_PROXY_ONLY` (the flag-rename evolves
+// the Phase B2 `VITE_STRICT_AI_PROXY` flag with a clearer name and an
+// added safety override). The old name is still honored as a deprecated
+// alias for one cycle so a stale .env doesn't fail open.
 //
-// When true: APP_NOT_ENABLED becomes terminal — the error propagates with
-//   enriched context (school_id, code, request_id) and the caller sees a
-//   real failure state. Disabled schools STOP grading. Use only after
-//   Slice 12.5 returns SAFE TO PROCEED AND every school that needs
-//   ai_grading has been enabled via Bridge SchoolDetailDrawer (or a
-//   targeted migration).
+// USE_AI_PROXY_ONLY=false (DEFAULT — current production posture):
+//   * Primary call to SAIL Core ai-proxy v9.
+//   * On APP_NOT_ENABLED 403 → fall back to legacy Netlify function.
+//   * Other proxy errors (CONSENT_REQUIRED, PROVIDER_ERROR, INVOKE_ERROR,
+//     PARSE_ERROR, UNEXPECTED_PAYLOAD, DENIED) propagate raw to the
+//     caller (Slice-11 scoped-fallback behaviour, preserved verbatim).
+//
+// USE_AI_PROXY_ONLY=true (the cutover state — flip after the OPENAI_API_KEY
+// secret is set on the Edge Function and the live success-path probe lands):
+//   * Primary call to SAIL Core ai-proxy v9.
+//   * NO fallback. APP_NOT_ENABLED throws an explicit teacher-readable
+//     error. Other errors run through normalizeAIError for a stable
+//     UX shape.
+//   * EXCEPTION (the safety override): if the proxy returns
+//     PROVIDER_ERROR with the literal "OPENAI_API_KEY not configured"
+//     message, the fallback fires regardless of flag value. This
+//     prevents accidental outage during the brief window between
+//     flipping the flag and setting the secret. The override is
+//     removed in B4 itself when the Netlify function is deleted.
+//
+// Outcome logs (one line per call, structured, greppable):
+//   [ai-proxy] proxy_success         { school_id, model, request_id, latency_ms }
+//   [ai-proxy] proxy_error_fallback_used    { school_id, code, reason, will_fallback:true }
+//   [ai-proxy] proxy_safety_fallback_used   { school_id, code, reason:'openai_key_missing' }
+//   [ai-proxy] proxy_error_no_fallback      { school_id, code, reason, proxy_only:true }
 //
 // ⚠️  ACTIVATION (no source code edit):
-//      Set in deploy env (or .env.production):
-//        VITE_STRICT_AI_PROXY=true
+//      Set in deploy env (or .env.local):
+//        VITE_USE_AI_PROXY_ONLY=true
 //      Then:
 //        cd sail-helm-core-v6-lite/sail-platform-shell && npm run build
 //      and deploy.
 //
-//   Why VITE_-prefixed: Vite only exposes env vars beginning with VITE_
-//   to client-side code. Anything else stays in the build server's
-//   process and never reaches the browser bundle.
+// Vite inlines `import.meta.env.VITE_*` at build time, so a rebuild is
+// required after flipping. The flag-true bundle is *smaller* than the
+// flag-false bundle because Vite tree-shakes the unreachable
+// `invokeNetlifyFallback` branches once the constant folds.
 //
-//   Why rebuild required: Vite inlines env values at build time (this
-//   is a static-replacement, not a runtime read). To flip without a
-//   rebuild, a future slice can add a runtime config fetch — but for
-//   today, env+rebuild+deploy is the activation path.
-//
-// Default-deny on missing env: `import.meta.env.VITE_STRICT_AI_PROXY`
-// resolves to `undefined` when unset, and `undefined === 'true'` is
-// false. So the flag stays false unless explicitly set to the literal
-// string 'true'. Any other value (1, on, yes) → false.
-//
-// Non-policy failures (CONSENT_REQUIRED, PROVIDER_ERROR, INVOKE_ERROR,
-// PARSE_ERROR, UNEXPECTED_PAYLOAD, DENIED) ALREADY surface as errors
-// regardless of this flag — Slice 11 made that the default. The flag
-// controls only the APP_NOT_ENABLED branch.
-//
-// User-facing error normalization: when STRICT_AI_PROXY is true, ALL
-// thrown errors from callAI run through normalizeAIError below before
-// being thrown. The result is an Error instance with a teacher-readable
-// `message` plus structured `type`, `originalCode`, and `cause` fields
-// for ops/support. When the flag is false, raw errors throw as before —
-// UX behavior unchanged.
+// Default-deny on missing env: `import.meta.env.VITE_USE_AI_PROXY_ONLY`
+// resolves to `undefined` when unset; `undefined === 'true'` is false.
+// The literal string 'true' is the only enable value.
 // ─────────────────────────────────────────────────────────────────────────────
-const STRICT_AI_PROXY = import.meta.env.VITE_STRICT_AI_PROXY === 'true'
+const USE_AI_PROXY_ONLY    = import.meta.env.VITE_USE_AI_PROXY_ONLY === 'true'
+const _LEGACY_STRICT_FLAG  = import.meta.env.VITE_STRICT_AI_PROXY === 'true'  // Phase B2 alias
+const PROXY_ONLY           = USE_AI_PROXY_ONLY || _LEGACY_STRICT_FLAG
+// Kept as `STRICT_AI_PROXY` for back-compat with any internal log strings
+// or downstream readers; semantically identical to PROXY_ONLY.
+const STRICT_AI_PROXY      = PROXY_ONLY
 
 /**
  * Map a raw error from invokeSailAiProxy into a teacher-safe Error.
@@ -161,75 +169,100 @@ export async function callAI({
     role = null,
     deploymentMode = null,
 }) {
-    // ── Primary path: SAIL Core ai-proxy v4 ─────────────────────────────
-    // Slice 11: scoped fallback for APP_NOT_ENABLED only.
-    // Slice 13 prep: STRICT_AI_PROXY flag (currently false) gates that
-    // last fallback branch. When flipped to true, APP_NOT_ENABLED also
-    // surfaces and disabled schools stop grading — full enforcement.
+    // ── Primary path: SAIL Core ai-proxy v9 ─────────────────────────────
+    // Phase B4-prep (2026-05-07). Outcome of every call lands in exactly
+    // ONE of four structured log lines:
+    //
+    //   proxy_success                — primary path returned ok:true
+    //   proxy_safety_fallback_used   — proxy lacked OPENAI_API_KEY; fellback regardless of flag
+    //   proxy_error_fallback_used    — proxy errored, flag=false → Netlify fallback ran
+    //   proxy_error_no_fallback      — proxy errored, flag=true (no fallback) OR error not in scoped-fallback set
+    //
+    // The flag (PROXY_ONLY) controls ONLY the APP_NOT_ENABLED branch —
+    // every other proxy-side failure (CONSENT_REQUIRED, INVOKE_ERROR,
+    // PARSE_ERROR, UNEXPECTED_PAYLOAD, DENIED, PROVIDER_ERROR≠key-missing)
+    // propagates regardless of flag. This preserves Slice-11 scoping;
+    // the flag toggles whether disabled schools fall back vs. error out.
     try {
-        return await invokeSailAiProxy({ system, prompt, schoolId, feature })
+        const result = await invokeSailAiProxy({ system, prompt, schoolId, feature })
+        // Primary path success. result.* fields aren't directly available
+        // here (invokeSailAiProxy returns the parsed JSON only), so log
+        // the call shape rather than the response payload.
+        console.log('[ai-proxy] proxy_success', {
+            school_id:  schoolId,
+            feature,
+            proxy_only: PROXY_ONLY,
+        })
+        return result
     } catch (sailErr) {
-        const isAppNotEnabled = sailErr?.code === 'APP_NOT_ENABLED'
+        const code            = sailErr?.code ?? null
+        const message         = sailErr?.message ?? ''
+        const isAppNotEnabled = code === 'APP_NOT_ENABLED'
 
-        // Phase B3 (Stage 2 Helm stabilisation, 2026-05-07) — explicit
-        // strict-mode runtime guard. The fallback branch below is the
-        // ONLY code path that calls invokeNetlifyFallback in this file.
-        // Belt-and-braces: throw a loud, unambiguous error if anyone
-        // ever tries to route around the gate while strict mode is on.
-        // This makes a refactor-induced silent-fallback impossible —
-        // any "fallback was attempted under strict mode" lands in the
-        // browser console and the network log.
-        if (STRICT_AI_PROXY && isAppNotEnabled) {
-            throw new Error(
-                `[STRICT_AI_PROXY] fallback blocked. ` +
-                `school_id=${schoolId ?? '(null)'} got APP_NOT_ENABLED from ai-proxy v9 ` +
-                `but VITE_STRICT_AI_PROXY=true forbids the legacy Netlify path. ` +
-                `Either enable ai_grading in school_apps for this school, OR ` +
-                `unset VITE_STRICT_AI_PROXY to re-allow the fallback (NOT RECOMMENDED).`,
-            )
-        }
-
-        if (!STRICT_AI_PROXY && isAppNotEnabled) {
-            console.warn(
-                '[ai-proxy v9] APP_NOT_ENABLED — falling back to Netlify '
-                + '(school not yet enabled for ai_grading; STRICT_AI_PROXY=false)',
-            )
+        // ── Safety override ─────────────────────────────────────────────
+        // The proxy is missing its OPENAI_API_KEY env var. Falling back is
+        // explicit safety: prevents accidental outage during the brief
+        // window between flipping PROXY_ONLY=true and setting the secret.
+        // This branch is REMOVED as part of Phase B4 when the Netlify
+        // fallback is deleted.
+        const isMissingProviderKey =
+            code === 'PROVIDER_ERROR'
+            && /OPENAI_API_KEY not configured/i.test(message)
+        if (isMissingProviderKey) {
+            console.warn('[ai-proxy] proxy_safety_fallback_used', {
+                school_id:    schoolId,
+                code,
+                reason:       'openai_key_missing',
+                will_fallback: true,
+                proxy_only:   PROXY_ONLY,
+            })
             return await invokeNetlifyFallback({
-                system,
-                prompt,
-                maxTokens,
-                feature,
-                userId,
-                schoolId,
-                role,
-                deploymentMode,
+                system, prompt, maxTokens, feature, userId, schoolId, role, deploymentMode,
             })
         }
 
-        // Strict mode + APP_NOT_ENABLED: log enriched context BEFORE
-        // re-throwing so the user-facing error in Assignments has full
-        // breadcrumbs available in the console for triage.
-        if (STRICT_AI_PROXY && isAppNotEnabled) {
-            console.error('[ai-proxy v4] APP_NOT_ENABLED (STRICT mode — no fallback)', {
-                school_id:  schoolId,
-                code:       sailErr.code,
-                request_id: sailErr.proxyData?.request_id ?? null,
-                proxy_data: sailErr.proxyData ?? null,
+        // ── Scoped fallback (PROXY_ONLY=false, APP_NOT_ENABLED only) ───
+        if (!PROXY_ONLY && isAppNotEnabled) {
+            console.warn('[ai-proxy] proxy_error_fallback_used', {
+                school_id:    schoolId,
+                code,
+                reason:       message,
+                will_fallback: true,
+                proxy_only:   PROXY_ONLY,
+            })
+            return await invokeNetlifyFallback({
+                system, prompt, maxTokens, feature, userId, schoolId, role, deploymentMode,
             })
         }
 
-        // All other failure modes (CONSENT_REQUIRED, PROVIDER_ERROR,
-        // INVOKE_ERROR, PARSE_ERROR, UNEXPECTED_PAYLOAD, DENIED) — and
-        // APP_NOT_ENABLED in strict mode — propagate. Caller
-        // (Assignments.gradeStudent) wraps with
-        // `throw new Error('AI call failed: ...')` and shows a per-row
-        // error in the UI.
-        //
-        // In STRICT mode, normalize the thrown error to a teacher-safe
-        // shape (Error with stable .type and friendly .message). When
-        // the flag is false, raw errors throw as before — Slice 11
-        // behavior unchanged.
-        if (STRICT_AI_PROXY) {
+        // ── No-fallback paths ───────────────────────────────────────────
+        console.error('[ai-proxy] proxy_error_no_fallback', {
+            school_id:  schoolId,
+            code,
+            reason:     message,
+            proxy_only: PROXY_ONLY,
+            request_id: sailErr.proxyData?.request_id ?? null,
+        })
+
+        // PROXY_ONLY=true + APP_NOT_ENABLED: throw a loud, school-specific
+        // message so the failure in the UI is actionable (not a generic
+        // "AI grading is unavailable").
+        if (PROXY_ONLY && isAppNotEnabled) {
+            throw new Error(
+                `[USE_AI_PROXY_ONLY] fallback blocked. ` +
+                `school_id=${schoolId ?? '(null)'} got APP_NOT_ENABLED from ai-proxy v9 ` +
+                `but VITE_USE_AI_PROXY_ONLY=true forbids the legacy Netlify path. ` +
+                `Either enable ai_grading in school_apps for this school, OR ` +
+                `unset VITE_USE_AI_PROXY_ONLY to re-allow the scoped fallback (NOT RECOMMENDED).`,
+            )
+        }
+
+        // All remaining failure modes (CONSENT_REQUIRED, PROVIDER_ERROR
+        // [non-key-missing], INVOKE_ERROR, PARSE_ERROR, UNEXPECTED_PAYLOAD,
+        // DENIED) propagate. Under PROXY_ONLY=true the error is normalized
+        // to a stable teacher-readable shape; under PROXY_ONLY=false the
+        // raw error propagates (Slice-11 verbatim).
+        if (PROXY_ONLY) {
             throw normalizeAIError(sailErr)
         }
         throw sailErr
