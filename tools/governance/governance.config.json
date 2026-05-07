@@ -1,0 +1,62 @@
+{
+  "platformName": "SAIL",
+  "canonicalSupabaseProjectRef": "gidyonbzxjorrgpicctt",
+  "legacySupabaseProjectRefs": ["qilppvnwilcxworlrdjh"],
+  "manifestPath": "SAIL_SYSTEM_MANIFEST.md",
+  "requiredManifestPhrases": [
+    "SAIL Core is the single backend source of truth",
+    "Bridge is internal-only",
+    "Helm is external-facing",
+    "AI reports are not accepted as true unless verified",
+    "gidyonbzxjorrgpicctt"
+  ],
+  "requiredActiveTables": [
+    "profiles",
+    "schools",
+    "school_members",
+    "audit_logs",
+    "sail_memory",
+    "apps",
+    "user_apps",
+    "ai_requests",
+    "consent_records",
+    "school_apps",
+    "school_app_events"
+  ],
+  "tablesThatMustHaveRls": [
+    "profiles",
+    "schools",
+    "school_members",
+    "audit_logs",
+    "sail_memory",
+    "apps",
+    "user_apps",
+    "ai_requests",
+    "consent_records",
+    "school_apps",
+    "school_app_events",
+    "analytics_events",
+    "system_health_history"
+  ],
+  "knownRlsBacklogTables": [
+    "enrollments",
+    "submissions",
+    "grades",
+    "roles",
+    "permissions",
+    "role_permissions",
+    "campuses",
+    "departments",
+    "notifications",
+    "message_threads",
+    "messages",
+    "files",
+    "rollout_gate_logs",
+    "rollout_gate_checks"
+  ],
+  "expectedPackage": {
+    "name": "sail-helm-core-v6-lite",
+    "type": "module"
+  },
+  "requiredPackageScripts": ["dev", "build", "preview", "governance:verify"]
+}
