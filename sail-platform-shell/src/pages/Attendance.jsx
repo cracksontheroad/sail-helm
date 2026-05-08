@@ -7,34 +7,41 @@ import { getClass } from '../services/classes'
 import {
     createAttendanceSession,
     saveAttendanceRegister,
-    getAttendanceSession,
+    findAttendanceSessionForDate,
+    listAttendanceSessionsForClass,
 } from '../services/attendance'
 
 /**
- * /class/:classId/attendance — Phase A
+ * /class/:classId/attendance — Phase A + Phase B
  *
- * Teacher-facing attendance register. One vertical slice:
+ * Phase A shipped the core register: open session → mark students →
+ * save. Phase B adds session continuity:
  *
- *   * Open (or re-open) today's session for the class —
- *     bridge_create_attendance_session is idempotent.
- *   * Load the class roster — bridge_list_class_students.
- *   * Load any existing marks for this session —
- *     bridge_get_attendance_session.
- *   * Render a row per student with a status select
- *     (present / absent / late). Default = present for unmarked rows.
- *   * Save → bridge_save_attendance_register (bulk upsert in one RPC).
- *     Per-row audit triggers fire on the backend.
+ *   * Page load FINDS the session (read-only lookup), it doesn't
+ *     auto-create. If none exists, the operator sees a "Start
+ *     register" CTA. This means navigating to the page no longer
+ *     spuriously emits attendance.session_started — the audit event
+ *     fires only when an operator actively decides to take attendance
+ *     for that day.
  *
- * UI is intentionally minimal — the goal is "teacher takes register
- * in 30 seconds", not a polished design surface. Matches Class.jsx's
- * inline-style posture so the two pages feel consistent.
+ *   * Recent Sessions panel shows the last 5 sessions for the class
+ *     with present/absent/late counts. Clicking a row sets the date
+ *     picker + reloads. Counts come pre-aggregated from
+ *     bridge_list_attendance_sessions_for_class so the panel is one
+ *     RPC, not N+1.
  *
- * RLS / permission model:
- *   * Reads (roster + session + records) succeed for any school member
- *     of the class's school (RLS).
- *   * Writes are gated server-side by is_staff_of_school OR
- *     manage_attendance — Helm doesn't pre-check; the RPC raises 42501
- *     for non-staff and we surface that as an inline error.
+ *   * After save, the recent list refreshes so the just-saved session
+ *     surfaces with its new counts. The selected date is preserved
+ *     (no "reset flicker" — the session stays loaded for further
+ *     edits).
+ *
+ * Permissions / RLS — unchanged from Phase A:
+ *   * Reads gate on school membership (RLS on attendance_sessions /
+ *     attendance_records / classes).
+ *   * Writes gate on is_staff_of_school OR has_permission(manage_attendance)
+ *     enforced server-side by the RPCs. Helm pre-hides the Save +
+ *     Start CTA buttons via CAN.createAssignment(role) for snappier
+ *     UX, but the server is the boundary.
  */
 
 const STATUS_OPTIONS = [
@@ -70,12 +77,29 @@ function todayISO() {
     return `${yy}-${mm}-${dd}`
 }
 
+function formatLongDate(iso) {
+    if (!iso) return ''
+    // Render YYYY-MM-DD strings as "Mon, May 8" — keeps the recent
+    // list scannable. Date constructor with just a date string parses
+    // as UTC midnight; we want to show the date as-is so we use
+    // toLocaleDateString with timeZone='UTC' to avoid an off-by-one in
+    // negative-offset locales.
+    try {
+        const d = new Date(`${iso}T00:00:00Z`)
+        return d.toLocaleDateString(undefined, {
+            weekday: 'short', month: 'short', day: 'numeric',
+            timeZone: 'UTC',
+        })
+    } catch {
+        return iso
+    }
+}
+
 export default function AttendancePage() {
     const { classId } = useParams()
     const { role } = useAuth()
     // Phase A: only staff (teacher / admin) can mark; students see the
-    // page but can't save. Mirrors Class.jsx's CAN.createAssignment
-    // posture.
+    // page but can't save / start.
     const canMark = CAN.createAssignment(role)
 
     // Date the operator is taking attendance for. Default = today.
@@ -83,70 +107,68 @@ export default function AttendancePage() {
 
     // Loaded data
     const [klass,    setKlass]    = useState(null)
-    const [session,  setSession]  = useState(null)   // { id, ... }
+    const [session,  setSession]  = useState(null)   // null when no register exists for this date
     const [roster,   setRoster]   = useState([])     // [{ id, name, email }]
     const [marks,    setMarks]    = useState({})     // { [studentId]: 'present'|'absent'|'late' }
     const [loading,  setLoading]  = useState(true)
     const [error,    setError]    = useState(null)
+    const [recentSessions, setRecentSessions] = useState([])
 
     // Save state
-    const [saving,   setSaving]   = useState(false)
-    const [saveErr,  setSaveErr]  = useState(null)
-    const [summary,  setSummary]  = useState(null)   // { present_count, absent_count, late_count, total_count }
+    const [saving,  setSaving]  = useState(false)
+    const [saveErr, setSaveErr] = useState(null)
+    const [summary, setSummary] = useState(null)   // { present_count, absent_count, late_count, total_count }
+    // Phase B — Start register state. Distinct from saving because the
+    // Start button enables before any session exists.
+    const [starting, setStarting] = useState(false)
 
+    // ── Recent sessions ────────────────────────────────────────────
+    // Loaded once on page mount + after each save (so the just-saved
+    // session surfaces with new counts). Gracefully empty on error
+    // since the recent panel is decorative — failure shouldn't block
+    // the main register.
+    const refreshRecent = useCallback(async () => {
+        if (!classId) return
+        try {
+            const rows = await listAttendanceSessionsForClass({ classId, limit: 5 })
+            setRecentSessions(rows)
+        } catch (err) {
+            console.error('[Attendance] recent sessions load failed:', err.message)
+            setRecentSessions([])
+        }
+    }, [classId])
+
+    // ── Find-first load (Phase B) ──────────────────────────────────
+    // Tries to LOAD the existing session for the chosen date. Does
+    // NOT auto-create. If session is null, the UI renders a "Start
+    // register" CTA instead of the editor.
     const refresh = useCallback(async () => {
         if (!classId || !sessionDate) return
         setLoading(true); setError(null); setSummary(null)
         try {
-            // 1) Class metadata (also implicitly gates: if the user
-            // can't read this class, getClass throws and we fall into
-            // the error block).
-            const classRow = await getClass(classId)
-
-            // 2) Roster (RLS: school members of the class's school).
-            const { data: rosterRows, error: rosterErr } = await supabase.rpc(
-                'bridge_list_class_students', { p_class_id: classId },
-            )
-            if (rosterErr) throw rosterErr
-            const rosterFormatted = (rosterRows || []).map((r) => ({
+            // 1) Class metadata + roster — both unconditional.
+            const [classRow, rosterResult, finder] = await Promise.all([
+                getClass(classId),
+                supabase.rpc('bridge_list_class_students', { p_class_id: classId }),
+                findAttendanceSessionForDate({ classId, sessionDate }),
+            ])
+            if (rosterResult.error) throw rosterResult.error
+            const rosterFormatted = (rosterResult.data || []).map((r) => ({
                 id:    r.user_id,
                 name:  r.full_name || r.email || r.user_id,
                 email: r.email,
             }))
 
-            // 3) Open or re-open the session for the chosen date. If
-            // the user is a student, this RPC will refuse with 42501
-            // — we catch it below to keep the rest of the page usable
-            // (they can still see the roster + their own existing mark
-            // via the SECURITY INVOKER read RPC further down).
-            let sessionRow = null
-            try {
-                sessionRow = await createAttendanceSession({
-                    classId, sessionDate,
-                })
-            } catch (rpcErr) {
-                // Non-staff falls through here. Surface the message so
-                // the operator knows why the page is read-only.
-                if (canMark) throw rpcErr
-                // For students: we still want to show their existing
-                // mark for the day. Look up the session indirectly by
-                // listing — but Phase A skips that complexity. Just
-                // render the empty roster state with a notice.
-            }
-
-            // 4) Load existing records for the session (if any).
-            let existingMarks = {}
-            if (sessionRow?.id) {
-                const sess = await getAttendanceSession(sessionRow.id)
-                existingMarks = (sess?.records || []).reduce((acc, r) => {
-                    acc[r.student_user_id] = r.status
-                    return acc
-                }, {})
-            }
-
-            // Default unmarked rows to 'present' so a teacher who
-            // hits Save without touching anyone has the natural
-            // outcome ("everyone's here").
+            // 2) Build initial marks. If session exists, prefill from
+            // its records (fall back to 'present' for unmarked roster
+            // members in case a new student joined since the register
+            // was last saved). If no session, default everyone to
+            // 'present' so a single Save click after Start does the
+            // natural outcome.
+            const existingMarks = (finder?.records || []).reduce((acc, r) => {
+                acc[r.student_user_id] = r.status
+                return acc
+            }, {})
             const initialMarks = {}
             for (const s of rosterFormatted) {
                 initialMarks[s.id] = existingMarks[s.id] || 'present'
@@ -154,20 +176,38 @@ export default function AttendancePage() {
 
             setKlass(classRow)
             setRoster(rosterFormatted)
-            setSession(sessionRow)
+            setSession(finder?.session || null)
             setMarks(initialMarks)
         } catch (err) {
             setError(err)
         } finally {
             setLoading(false)
         }
-    }, [classId, sessionDate, canMark])
+    }, [classId, sessionDate])
 
     useEffect(() => { refresh() }, [refresh])
+    useEffect(() => { refreshRecent() }, [refreshRecent])
 
     const setStatus = (studentId, status) => {
         setMarks((prev) => ({ ...prev, [studentId]: status }))
-        setSummary(null)  // a fresh save will produce a fresh summary
+        setSummary(null)  // any change invalidates the prior save summary
+    }
+
+    // Phase B — explicit "Start register" action. Calls the create
+    // RPC (which also emits attendance.session_started exactly once)
+    // and re-runs refresh() so the editor renders.
+    const onStart = async () => {
+        if (!canMark || starting) return
+        setStarting(true); setSaveErr(null); setError(null)
+        try {
+            await createAttendanceSession({ classId, sessionDate })
+            await refresh()
+            await refreshRecent()
+        } catch (err) {
+            setSaveErr(err)
+        } finally {
+            setStarting(false)
+        }
     }
 
     const onSave = async () => {
@@ -184,6 +224,11 @@ export default function AttendancePage() {
                 records,
             })
             setSummary(result)
+            // Phase B — the just-saved session's counts changed; the
+            // Recent panel should reflect that. Don't reload the
+            // editor (saving keeps the operator on the same date with
+            // their state intact — no flicker).
+            await refreshRecent()
         } catch (err) {
             setSaveErr(err)
         } finally {
@@ -218,17 +263,20 @@ export default function AttendancePage() {
                     type="date"
                     value={sessionDate}
                     onChange={(e) => setSessionDate(e.target.value)}
-                    disabled={saving}
+                    disabled={saving || starting}
                     style={{ fontSize: 13, padding: '4px 8px', borderRadius: 4, border: '1px solid #d4d8de' }}
                 />
-                {session && !session.isNew && (
+                {/* Phase B status label — was "(new register)" / "(re-opening
+                    existing register)" in Phase A; now derives from session
+                    null vs row, which is the same signal but without the
+                    create-on-load side-effect. */}
+                {session ? (
                     <span style={{ fontSize: 11, color: '#7a8290' }}>
-                        (re-opening existing register)
+                        existing register
                     </span>
-                )}
-                {session?.isNew && (
-                    <span style={{ fontSize: 11, color: '#1f8a4d' }}>
-                        (new register)
+                ) : (
+                    <span style={{ fontSize: 11, color: '#7a8290' }}>
+                        no register yet
                     </span>
                 )}
             </div>
@@ -252,6 +300,51 @@ export default function AttendancePage() {
                 </div>
             )}
 
+            {/* ── Phase B: Start CTA when no register exists yet ──────── */}
+            {!loading && !session && roster.length > 0 && (
+                <div style={{
+                    padding: '14px 16px',
+                    background: '#f7f9fc',
+                    border: '1px dashed #b8c4d4',
+                    borderRadius: 6,
+                    margin: '0 0 14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    flexWrap: 'wrap',
+                }}>
+                    <span style={{ fontSize: 13, color: '#3a4654', flex: 1 }}>
+                        No register has been started for {formatLongDate(sessionDate)} yet.
+                    </span>
+                    {canMark ? (
+                        <button
+                            type="button"
+                            onClick={onStart}
+                            disabled={starting}
+                            style={{
+                                fontSize: 13,
+                                padding: '6px 14px',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: starting ? '#a8b3c4' : '#3b6cd8',
+                                color: '#fff',
+                                cursor: starting ? 'wait' : 'pointer',
+                                fontWeight: 500,
+                            }}
+                        >
+                            {starting ? 'Starting…' : 'Start register'}
+                        </button>
+                    ) : (
+                        <span style={{ fontSize: 12, color: '#7a8290' }}>
+                            Only teachers and admins can start a register.
+                        </span>
+                    )}
+                </div>
+            )}
+
+            {/* ── Roster + status pills (rendered for both no-session and
+                  session-present cases). When no session exists, the
+                  pills are disabled — operator must Start first. */}
             {loading ? (
                 <div style={{ color: '#7a8290', fontSize: 13 }}>Loading register…</div>
             ) : roster.length === 0 ? (
@@ -269,6 +362,7 @@ export default function AttendancePage() {
                                 padding: '10px 14px',
                                 borderTop: i === 0 ? 'none' : '1px solid #e3e6eb',
                                 fontSize: 13.5,
+                                opacity: !session ? 0.55 : 1,
                             }}
                         >
                             <div style={{ minWidth: 0, flex: 1 }}>
@@ -284,11 +378,12 @@ export default function AttendancePage() {
                             <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                                 {STATUS_OPTIONS.map((opt) => {
                                     const active = (marks[s.id] || 'present') === opt.value
+                                    const disabled = !canMark || saving || !session
                                     return (
                                         <button
                                             key={opt.value}
                                             type="button"
-                                            disabled={!canMark || saving}
+                                            disabled={disabled}
                                             onClick={() => setStatus(s.id, opt.value)}
                                             style={{
                                                 fontSize: 12,
@@ -297,7 +392,7 @@ export default function AttendancePage() {
                                                 border: '1px solid ' + (active ? '#3b6cd8' : '#d4d8de'),
                                                 background: active ? '#dde6f7' : '#fff',
                                                 color: active ? '#1f3d80' : '#161b22',
-                                                cursor: canMark && !saving ? 'pointer' : 'default',
+                                                cursor: disabled ? 'default' : 'pointer',
                                                 fontWeight: active ? 600 : 400,
                                             }}
                                         >
@@ -311,12 +406,12 @@ export default function AttendancePage() {
                 </div>
             )}
 
-            {canMark && roster.length > 0 && (
+            {canMark && roster.length > 0 && session && (
                 <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
                     <button
                         type="button"
                         onClick={onSave}
-                        disabled={saving || !session?.id}
+                        disabled={saving}
                         style={{
                             fontSize: 13,
                             padding: '7px 16px',
@@ -335,6 +430,69 @@ export default function AttendancePage() {
             {!canMark && (
                 <div style={{ marginTop: 16, fontSize: 12, color: '#7a8290' }}>
                     Read-only — only teachers and admins can mark attendance.
+                </div>
+            )}
+
+            {/* ── Phase B: Recent Sessions panel ────────────────────────────
+                  Last 5 sessions for the class with present/absent/late
+                  counts, clickable to load. Lives below the main register
+                  so it's discoverable without crowding the primary action.
+                  Decorative (failure to load isn't fatal). */}
+            {recentSessions.length > 0 && (
+                <div style={{ marginTop: 32 }}>
+                    <h3 style={{ fontSize: 13, fontWeight: 600, color: '#5b6877',
+                                 textTransform: 'uppercase', letterSpacing: '0.06em',
+                                 margin: '0 0 8px' }}>
+                        Recent sessions
+                    </h3>
+                    <div style={{ border: '1px solid #e3e6eb', borderRadius: 6 }}>
+                        {recentSessions.map((s, i) => {
+                            const isCurrent = s.sessionDate === sessionDate
+                            return (
+                                <button
+                                    key={s.id}
+                                    type="button"
+                                    onClick={() => setSessionDate(s.sessionDate)}
+                                    disabled={isCurrent || saving || starting}
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'space-between',
+                                        gap: 12,
+                                        width: '100%',
+                                        padding: '8px 14px',
+                                        borderTop: i === 0 ? 'none' : '1px solid #e3e6eb',
+                                        background: isCurrent ? '#f0f5ff' : 'none',
+                                        border: 'none',
+                                        cursor: isCurrent ? 'default' : 'pointer',
+                                        textAlign: 'left',
+                                        fontSize: 12.5,
+                                    }}
+                                >
+                                    <span style={{ fontWeight: 500, color: '#161b22', minWidth: 130 }}>
+                                        {formatLongDate(s.sessionDate)}
+                                        {isCurrent && (
+                                            <span style={{ marginLeft: 6, fontSize: 11, color: '#3b6cd8' }}>
+                                                · current
+                                            </span>
+                                        )}
+                                    </span>
+                                    <span style={{ display: 'flex', gap: 10, color: '#5b6877' }}>
+                                        <span title="present">✓ {s.presentCount}</span>
+                                        <span title="absent" style={{ color: s.absentCount > 0 ? '#a04545' : undefined }}>
+                                            ✕ {s.absentCount}
+                                        </span>
+                                        <span title="late" style={{ color: s.lateCount > 0 ? '#a06c20' : undefined }}>
+                                            ⏱ {s.lateCount}
+                                        </span>
+                                        <span style={{ color: '#7a8290' }} title="total marked">
+                                            / {s.totalCount}
+                                        </span>
+                                    </span>
+                                </button>
+                            )
+                        })}
+                    </div>
                 </div>
             )}
         </div>

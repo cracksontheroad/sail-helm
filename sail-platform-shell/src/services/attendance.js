@@ -101,3 +101,55 @@ export async function getAttendanceSession(sessionId) {
     if (error) throw error
     return data || { session: null, class: null, records: [] }
 }
+
+/**
+ * Phase B — read-only lookup by (classId, sessionDate). Returns the
+ * same payload shape as getAttendanceSession but with `session: null`
+ * when no register exists yet for that pair. Helm uses the null vs
+ * row distinction to render a "Start register" CTA without
+ * spuriously emitting `attendance.session_started` on every page
+ * load.
+ *
+ * @param {{ classId: string, sessionDate: string }} args
+ *   sessionDate is an ISO 'YYYY-MM-DD' string.
+ * @returns {Promise<{ session: object|null, class: object|null, records: Array }>}
+ */
+export async function findAttendanceSessionForDate({ classId, sessionDate } = {}) {
+    if (!classId)     throw new Error('classId is required')
+    if (!sessionDate) throw new Error('sessionDate is required')
+    const { data, error } = await supabase.rpc('bridge_get_attendance_session_for_date', {
+        p_class_id:     classId,
+        p_session_date: sessionDate,
+    })
+    if (error) throw error
+    return data || { session: null, class: null, records: [] }
+}
+
+/**
+ * Phase B — recent sessions for a class with present/absent/late
+ * counts pre-aggregated server-side. Powers the Recent Sessions panel
+ * on the Helm Attendance page so the operator can jump back to a
+ * previous register without going through a date-picker hunt.
+ *
+ * @param {{ classId: string, limit?: number }} args
+ * @returns {Promise<Array<{ id, classId, sessionDate, createdBy, createdAt, totalCount, presentCount, absentCount, lateCount }>>}
+ */
+export async function listAttendanceSessionsForClass({ classId, limit = 5 } = {}) {
+    if (!classId) throw new Error('classId is required')
+    const { data, error } = await supabase.rpc('bridge_list_attendance_sessions_for_class', {
+        p_class_id: classId,
+        p_limit:    limit,
+    })
+    if (error) throw error
+    return (data || []).map((r) => ({
+        id:           r.id,
+        classId:      r.class_id,
+        sessionDate:  r.session_date,
+        createdBy:    r.created_by,
+        createdAt:    r.created_at,
+        totalCount:   r.total_count,
+        presentCount: r.present_count,
+        absentCount:  r.absent_count,
+        lateCount:    r.late_count,
+    }))
+}
