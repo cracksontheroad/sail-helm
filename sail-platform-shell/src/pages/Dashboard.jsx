@@ -10,54 +10,26 @@ export default function Dashboard() {
         if (schoolId) loadStats()
     }, [schoolId])
 
+    // B27.1 read-path consolidation (2026-05-08): replaced 5 separate
+    // direct-table count queries with one bridge_get_helm_dashboard_stats
+    // RPC. Same RLS posture (the RPC is a thin LANGUAGE sql STABLE
+    // wrapper); same numbers a teacher / student / sail-tier user
+    // would have seen via the previous queries — but in one round-trip
+    // instead of up to four.
     async function loadStats() {
-        // Count classes for this school
-        const { count: classes } = await supabase
-            .from('classes')
-            .select('*', { count: 'exact', head: true })
-            .eq('school_id', schoolId)
-
-        // Count assignments for this school's classes
-        const { data: schoolClasses } = await supabase
-            .from('classes')
-            .select('id')
-            .eq('school_id', schoolId)
-
-        const classIds = (schoolClasses || []).map(c => c.id)
-
-        let assignments = 0
-        let distributed = 0
-
-        if (classIds.length > 0) {
-            const { count: assignmentCount } = await supabase
-                .from('assignments')
-                .select('*', { count: 'exact', head: true })
-                .in('class_id', classIds)
-
-            assignments = assignmentCount ?? 0
-
-            // Count student_assignments for this school's assignments
-            const { data: schoolAssignments } = await supabase
-                .from('assignments')
-                .select('id')
-                .in('class_id', classIds)
-
-            const assignmentIds = (schoolAssignments || []).map(a => a.id)
-
-            if (assignmentIds.length > 0) {
-                const { count: distCount } = await supabase
-                    .from('student_assignments')
-                    .select('*', { count: 'exact', head: true })
-                    .in('assignment_id', assignmentIds)
-
-                distributed = distCount ?? 0
-            }
+        const { data, error } = await supabase.rpc('bridge_get_helm_dashboard_stats', {
+            p_school_id: schoolId,
+        })
+        if (error) {
+            console.error('[Dashboard.loadStats] bridge_get_helm_dashboard_stats failed:', error.message)
+            return
         }
-
+        // RPC returns RETURNS TABLE → array of one row.
+        const row = Array.isArray(data) ? data[0] : data
         setStats({
-            classes: classes ?? 0,
-            assignments,
-            distributed,
+            classes:     Number(row?.classes_count)     || 0,
+            assignments: Number(row?.assignments_count) || 0,
+            distributed: Number(row?.distributed_count) || 0,
         })
     }
 

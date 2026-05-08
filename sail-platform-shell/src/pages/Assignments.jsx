@@ -147,75 +147,86 @@ export default function Assignments() {
         }
     }, [selectedAssignment])
 
+    // ── B27.1 read-path consolidation (2026-05-08) ─────────────────────
+    // All reads in this page now go through Core RPCs instead of
+    // `supabase.from(...)`. Same RLS posture (the new RPCs are thin
+    // LANGUAGE sql STABLE wrappers, no SECURITY DEFINER), uniform with
+    // Bridge. The previous loadStudents had to chain school_members →
+    // profiles to compose names; bridge_list_class_students returns
+    // full_name server-side from the same profile/auth join, so two
+    // round-trips collapse into one.
+
     async function loadClasses() {
-        let query = supabase.from('classes').select('*')
-        if (schoolId) query = query.eq('school_id', schoolId)
-        const { data } = await query
+        if (!schoolId) {
+            setClasses([])
+            return
+        }
+        const { data, error } = await supabase.rpc('bridge_list_classes', {
+            p_school_id: schoolId,
+        })
+        if (error) {
+            console.error('[loadClasses] bridge_list_classes failed:', error.message)
+        }
         setClasses(data || [])
     }
 
     async function loadAssignments() {
-        const { data } = await supabase
-            .from('assignments')
-            .select('*')
-            .eq('class_id', selectedClass)
+        if (!selectedClass) {
+            setAssignments([])
+            return
+        }
+        const { data, error } = await supabase.rpc('bridge_list_assignments', {
+            p_class_id: selectedClass,
+        })
+        if (error) {
+            console.error('[loadAssignments] bridge_list_assignments failed:', error.message)
+        }
         setAssignments(data || [])
     }
 
     async function loadStudents() {
-        // Use auth schoolId directly — no extra query needed
-        let membersQuery = supabase
-            .from('school_members')
-            .select('user_id')
-            .eq('role', 'student')
-
-        if (schoolId) {
-            membersQuery = membersQuery.eq('school_id', schoolId)
-        }
-
-        const { data: members, error: membersErr } = await membersQuery
-        if (membersErr) {
-            console.error('[loadStudents] school_members query failed:', membersErr.message, '— if RLS is enabled, this is the cause')
-        }
-        console.log(`[loadStudents] school_members rows: ${members?.length ?? 0} (school_id=${schoolId ?? 'any'})`)
-
-        if (!members || members.length === 0) {
+        if (!selectedClass) {
             setStudents([])
             return
         }
-
-        const ids = members.map(m => m.user_id)
-        const { data: profiles, error: profilesErr } = await supabase
-            .from('profiles')
-            .select('id, first_name, last_name')
-            .in('id', ids)
-        if (profilesErr) {
-            console.error('[loadStudents] profiles query failed:', profilesErr.message)
+        // bridge_list_class_students returns the role='student' members
+        // of the class's parent school with full_name pre-composed
+        // server-side. RLS on school_members narrows to the caller's
+        // visibility (teacher of school sees own school's students;
+        // student sees only same-school members per RLS; sail tier sees
+        // all). Replaces the previous school_members → profiles chain.
+        const { data, error } = await supabase.rpc('bridge_list_class_students', {
+            p_class_id: selectedClass,
+        })
+        if (error) {
+            console.error('[loadStudents] bridge_list_class_students failed:', error.message)
         }
-
-        const formatted = (profiles || []).map(p => ({
-            id: p.id,
-            name: `${p.first_name || ''} ${p.last_name || ''}`.trim() || p.id,
+        const formatted = (data || []).map(r => ({
+            id:   r.user_id,
+            name: r.full_name || r.email || r.user_id,
         }))
-
+        console.log(`[loadStudents] class_id=${selectedClass} → ${formatted.length} students`)
         setStudents(formatted)
     }
 
     async function loadStudentAssignments() {
-        const { data, error } = await supabase
-            .from('student_assignments')
-            .select('*')
-            .eq('assignment_id', selectedAssignment)
+        if (!selectedAssignment) {
+            setStudentAssignments({})
+            setGradeInputs({})
+            return
+        }
+        const { data, error } = await supabase.rpc('bridge_list_submissions', {
+            p_assignment_id: selectedAssignment,
+        })
         if (error) {
             console.error(
-                `[loadStudentAssignments] query failed for assignment_id=${selectedAssignment}:`,
+                `[loadStudentAssignments] bridge_list_submissions failed for assignment_id=${selectedAssignment}:`,
                 error.message,
-                '— if student_assignments RLS is enabled, this is the cause'
             )
         }
         console.log(
             `[loadStudentAssignments] assignment_id=${selectedAssignment} → ${data?.length ?? 0} rows`,
-            (data || []).map(r => ({ student_id: r.student_id, ai_grade: r.ai_grade, grade: r.grade, status: r.status }))
+            (data || []).map(r => ({ student_id: r.student_id, ai_grade: r.ai_grade, grade: r.grade, status: r.status })),
         )
 
         const map = {}

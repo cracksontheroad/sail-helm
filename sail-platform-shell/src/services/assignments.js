@@ -104,31 +104,27 @@ export async function listAssignmentsBySchool(schoolId) {
 
 /**
  * List every student_assignments row owned by the current authenticated
- * caller (filtered by RLS — Phase 6B's tightened SELECT policy admits
- * `student_id = effective_user_id()` for student-self-read).
- *
- * Phase 6E: powers the per-assignment status badge ("not submitted" vs
- * "submitted") on /my-assignments. Returning all rows in one query
+ * caller. Powers the per-assignment status badge ("not submitted" vs
+ * "submitted") on /my-assignments. Returning all rows in one round-trip
  * avoids N+1 calls to listSubmissions(assignmentId) per assignment.
  *
- * Direct table query lives in this service so the page never imports
- * supabase — the architectural property the Phase 6D refactor pinned in.
+ * Phase B27.1 (read-path consolidation, 2026-05-08): switched from a
+ * `from('student_assignments').select(...).eq('student_id', userId)`
+ * direct-table read (which required a separate `supabase.auth.getUser()`
+ * round-trip to resolve the caller) to the
+ * `bridge_list_my_assignment_rows()` RPC. The RPC filters server-side
+ * via `WHERE student_id = effective_user_id()`, which:
+ *   * uses one round-trip instead of two (no auth.getUser preamble)
+ *   * honors the impersonation lens correctly (a Bridge admin viewing
+ *     as a student sees that student's rows, not the admin's)
+ *   * matches the Bridge architectural pattern: Helm reaches for
+ *     `bridge_*` RPCs only, never `supabase.from(...)` directly.
  *
  * @returns {Promise<Array<{id, student_id, assignment_id, status, content,
  *                          submission_hash, created_at}>>}
  */
 export async function listMyAssignmentRows() {
-    // Resolve the caller via the live session. Cheaper than threading
-    // the user.id through every component call.
-    const { data: userData, error: userErr } = await supabase.auth.getUser()
-    if (userErr) throw userErr
-    const userId = userData?.user?.id
-    if (!userId) throw new Error('not authenticated')
-
-    const { data, error } = await supabase
-        .from('student_assignments')
-        .select('id, student_id, assignment_id, status, content, submission_hash, created_at')
-        .eq('student_id', userId)
+    const { data, error } = await supabase.rpc('bridge_list_my_assignment_rows')
     if (error) throw error
     return data || []
 }

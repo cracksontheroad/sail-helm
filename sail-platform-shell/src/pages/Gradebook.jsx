@@ -48,33 +48,49 @@ export default function Gradebook() {
         else setRows([])
     }, [selectedClass])
 
+    // ── B27.1 read-path consolidation (2026-05-08) ─────────────────────
+    // Both reads moved off `supabase.from(...)` onto Core RPCs.
+    // bridge_list_class_gradebook collapses the previous two-step query
+    // (assignments → student_assignments) into one round-trip and
+    // returns the assignment title pre-joined as `assignment_title`,
+    // so downstream rendering can use that instead of the previous
+    // `assignments(title)` PostgREST embed.
+
     async function loadClasses() {
-        let query = supabase.from('classes').select('*')
-        if (schoolId) query = query.eq('school_id', schoolId)
-        const { data } = await query
+        if (!schoolId) {
+            setClasses([])
+            return
+        }
+        const { data, error } = await supabase.rpc('bridge_list_classes', {
+            p_school_id: schoolId,
+        })
+        if (error) {
+            console.error('[Gradebook.loadClasses] bridge_list_classes failed:', error.message)
+        }
         setClasses(data || [])
     }
 
     async function loadGradebook() {
-        const { data: classAssignments } = await supabase
-            .from('assignments')
-            .select('id')
-            .eq('class_id', selectedClass)
-
-        if (!classAssignments?.length) {
+        if (!selectedClass) {
             setRows([])
             return
         }
-
-        const assignmentIds = classAssignments.map(a => a.id)
-
-        const { data } = await supabase
-            .from('student_assignments')
-            .select('*, assignments(title)')
-            .in('assignment_id', assignmentIds)
-            .order('assignment_id')
-
-        setRows(data || [])
+        const { data, error } = await supabase.rpc('bridge_list_class_gradebook', {
+            p_class_id: selectedClass,
+        })
+        if (error) {
+            console.error('[Gradebook.loadGradebook] bridge_list_class_gradebook failed:', error.message)
+        }
+        // Shape adjustment: the RPC returns assignment_title as a flat
+        // column. Wrap into `assignments: { title }` so the existing
+        // render code that reads `r.assignments?.title` keeps working
+        // unchanged. Future cleanup: have the JSX read assignment_title
+        // directly and drop this adapter.
+        const adapted = (data || []).map(r => ({
+            ...r,
+            assignments: { title: r.assignment_title },
+        }))
+        setRows(adapted)
     }
 
     return (

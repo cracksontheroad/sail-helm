@@ -1,15 +1,18 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // SAIL Classes Service — Helm-side
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 6D — single helper wrapping the per-class metadata fetch.
+// Phase 6D introduced a per-class metadata fetch backed by direct
+// `from('classes')` + `from('schools')` reads, with the comment
+// justifying it as "the Bridge bridge_list_classes(school_id) RPC isn't
+// the right shape" for a by-class-id lookup.
 //
-// Helm /class/:classId is keyed by class_id, not school_id, so the Bridge
-// `bridge_list_classes(school_id)` RPC isn't the right shape. A direct
-// SELECT on the classes table with a school name lookup is sufficient
-// and respects the existing RLS (same-school members see; schools.read
-// holders see; everyone else sees nothing).
+// Phase B27.1 (2026-05-08) closes that gap: bridge_get_class_detail(class_id)
+// composes the class + school join server-side as a single thin
+// LANGUAGE sql STABLE function. Same RLS posture (school_id-keyed
+// visibility on classes + schools); one round-trip instead of two; no
+// `supabase.from(...)` reach in this service anymore.
 //
-// If a class is not found OR the caller lacks read access, the function
+// If a class is not found OR the caller lacks read access, this function
 // throws with a clear error — caller handles it inline.
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -22,33 +25,35 @@ import { supabase } from '../lib/supabaseClient'
  *     school: { id, name } | null
  *   }
  *
- * Throws if classes RLS denies (covered same way as supabase errors —
- * caller renders the message in an inline error block).
+ * The RPC return shape is flat (school_name as a column); this wrapper
+ * adapts it back to the historical `school: { id, name }` nested shape
+ * so existing consumers (Class.jsx, etc.) keep working unchanged.
  *
  * @param {string} classId
  */
 export async function getClass(classId) {
     if (!classId) throw new Error('classId is required')
 
-    // 1) class metadata via RLS (admits same-school members + schools.read)
-    const { data: classRow, error: classErr } = await supabase
-        .from('classes')
-        .select('id, school_id, name, subject, teacher_id, created_at')
-        .eq('id', classId)
-        .single()
+    const { data, error } = await supabase.rpc('bridge_get_class_detail', {
+        p_class_id: classId,
+    })
+    if (error) throw error
+    // RPC returns RETURNS TABLE → array of zero or one row.
+    const row = Array.isArray(data) ? data[0] : data
+    if (!row) throw new Error('Class not found')
 
-    if (classErr) throw classErr
-    if (!classRow) throw new Error('Class not found')
-
-    // 2) school name lookup (RLS on schools admits same-school members
-    //    + schools.read; for the staff signed into Helm this is always
-    //    their own school, so the lookup never fails for legitimate
-    //    callers).
-    const { data: schoolRow } = await supabase
-        .from('schools')
-        .select('id, name')
-        .eq('id', classRow.school_id)
-        .single()
-
-    return { ...classRow, school: schoolRow || null }
+    return {
+        id:         row.id,
+        school_id:  row.school_id,
+        name:       row.name,
+        subject:    row.subject,
+        teacher_id: row.teacher_id,
+        created_at: row.created_at,
+        // Adapt flat school_name back to the nested {id, name} shape the
+        // historical caller code expects. id is the class's school_id
+        // (already validated by the RPC's join).
+        school:     row.school_name
+            ? { id: row.school_id, name: row.school_name }
+            : null,
+    }
 }
