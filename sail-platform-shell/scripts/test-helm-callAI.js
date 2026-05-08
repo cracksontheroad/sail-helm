@@ -1,46 +1,36 @@
 #!/usr/bin/env node
 /**
- * SAIL Phase B4-prep — white-box integration test for callAI()'s safety override.
+ * SAIL Phase B4 — white-box integration test for callAI() proxy-only behavior.
  *
  * Runs in Node (not Vite). Imports the actual `callAI` function from
- * src/services/ai.js (which now has a Node-portable env accessor) and
- * exercises it end-to-end with a real authenticated session.
+ * src/services/ai.js and exercises it end-to-end with a real authenticated
+ * session.
  *
  * Why this test: the harness `test-ai-proxy.js` calls the Edge Function
  * URL directly with `fetch()` — it does NOT go through Helm's
- * `services/ai.js → callAI()` chain. The safety-override branch lives
- * inside that chain. To validate that the override fires correctly, we
- * have to call `callAI()` from a real Node runtime that:
- *   1. Has a real Supabase session token (signed in as the probe user)
- *   2. Imports the actual services/ai.js with VITE_USE_AI_PROXY_ONLY in env
- *   3. Captures console output to assert the right log line emits
- *   4. Catches the (expected) failure of invokeNetlifyFallback (which
- *      also has no OPENAI_API_KEY in this environment) without erroring
- *      the test
+ * `services/ai.js → callAI()` chain. This test validates the actual
+ * code path Helm uses in production.
  *
- * Expected outcome:
- *   * Edge Function ai-proxy v9 returns 503 PROVIDER_ERROR with
- *     `error: "AI provider not configured"` (already proven via probe 3).
+ * Phase B4 expected outcomes (post fallback removal):
+ *   * Edge Function ai-proxy returns 503 PROVIDER_ERROR (until OPENAI_API_KEY
+ *     is set on the Edge Function — current state).
  *   * services/ai.js's invokeSailAiProxy throws an Error with
  *     code='PROVIDER_ERROR' and message='AI provider not configured'.
  *   * The catch block detects isMissingProviderKey=true.
- *   * console.warn fires with `[ai-proxy] proxy_safety_fallback_used` —
- *     THIS IS THE THING WE'RE VALIDATING.
- *   * The fallback is then invoked. It calls /.netlify/functions/ai-proxy.
- *     In this Node environment (no netlify dev running), that fetch will
- *     fail with ECONNREFUSED or similar. We catch that error gracefully.
- *
- * The TEST PASSES if the safety-override log line was captured before
- * the fallback failure. Fallback success isn't required — only the
- * branch-fired-correctly invariant is.
+ *   * console.error fires with `[ai-proxy] provider_not_configured` —
+ *     loud + ops-actionable.
+ *   * callAI throws an Error with .type='AI_PROVIDER_NOT_CONFIGURED'
+ *     and a teacher-readable message.
+ *   * NO `proxy_safety_fallback_used` log (no safety override anymore).
+ *   * NO `proxy_error_fallback_used` log (no scoped fallback anymore).
+ *   * The proxy still writes ONE row to ai_requests (status='denied',
+ *     error='OPENAI_API_KEY not configured') — same as before B4.
  *
  * After the test:
- *   * Query ai_requests for the new row written by the proxy's
- *     instrumentedInsert (label='openai_key_missing', status='denied').
+ *   * Query ai_requests for the new row written by the proxy.
  *   * Confirm exactly ONE new row was created.
- *   * Cleanup: delete the row, leaving the previously-held 19ea32a3-…
- *     row alone (the test for THAT row's existence already happened in
- *     Phase B3).
+ *   * Cleanup must run via service-role (MCP execute_sql) since
+ *     ai_requests has no DELETE policy for `authenticated`.
  */
 
 import { existsSync, readFileSync } from 'node:fs'
@@ -86,13 +76,9 @@ const SCHOOL_ID      = process.env.HARNESS_SCHOOL_ID     || '0d75ca24-26f0-4550-
 // ─── pretty print helper ───────────────────────────────────────────────────
 function line() { console.log('─'.repeat(78)) }
 function header(s) { console.log(`\n${s}`); line() }
-function kv(k, v) { console.log(`  ${String(k).padEnd(22)} ${v}`) }
+function kv(k, v) { console.log(`  ${String(k).padEnd(30)} ${v}`) }
 
 // ─── console capture ───────────────────────────────────────────────────────
-// We need to capture console.log/warn/error from inside services/ai.js so
-// the assertion can see the structured `[ai-proxy] *` log lines. We don't
-// silence them — they still print, but we ALSO record them for the test
-// to inspect.
 const captured = []
 const origLog   = console.log.bind(console)
 const origWarn  = console.warn.bind(console)
@@ -117,15 +103,14 @@ function stopCapture() {
 // ─── main ──────────────────────────────────────────────────────────────────
 async function main() {
     line()
-    console.log('SAIL Phase B4-prep — white-box test of callAI() safety override')
+    console.log('SAIL Phase B4 — white-box test of callAI() proxy-only path')
     line()
-    kv('SUPABASE_URL',          SUPABASE_URL)
-    kv('PROBE_EMAIL',           PROBE_EMAIL)
-    kv('PROBE_USER_ID',         PROBE_USER_ID)
-    kv('SCHOOL_ID',             SCHOOL_ID)
-    kv('VITE_USE_AI_PROXY_ONLY',process.env.VITE_USE_AI_PROXY_ONLY || '(unset)')
+    kv('SUPABASE_URL',  SUPABASE_URL)
+    kv('PROBE_EMAIL',   PROBE_EMAIL)
+    kv('PROBE_USER_ID', PROBE_USER_ID)
+    kv('SCHOOL_ID',     SCHOOL_ID)
 
-    // Step 1: sign in via supabase-js to obtain a real session JWT.
+    // Step 1: sign in.
     header('1) Sign in as probe user')
     const { createClient } = await import('@supabase/supabase-js')
     const sbAuth = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -141,10 +126,7 @@ async function main() {
     kv('access_token (head)', signin.session?.access_token?.slice(0, 16) + '…')
     kv('user.id',             signin.user?.id)
 
-    // Step 2: import Helm's supabase client (singleton) and inject the
-    // session. The supabase client lives in lib/supabaseClient.js as a
-    // module-scoped singleton — services/ai.js will use that same
-    // instance because it imports from the same module path.
+    // Step 2: import Helm's supabase client (singleton) and inject session.
     header('2) Inject session into Helm supabase client')
     const { supabase: helmSupabase } = await import('../src/lib/supabaseClient.js')
     const { error: setErr } = await helmSupabase.auth.setSession({
@@ -158,9 +140,7 @@ async function main() {
     const { data: whoAmI } = await helmSupabase.auth.getUser()
     kv('helmSupabase.auth user', whoAmI?.user?.id ?? '(none)')
 
-    // Step 3: import callAI and call it with a production-shape payload.
-    // Every console.log/warn/error from this point forward is captured
-    // into `captured[]`.
+    // Step 3: import callAI and call it.
     header('3) Call callAI() with ai_grading shape')
     const { callAI } = await import('../src/services/ai.js')
     startCapture()
@@ -172,8 +152,6 @@ async function main() {
             prompt:   'Probe: respond with the literal string "pong".',
             schoolId: SCHOOL_ID,
             feature:  'grading',
-            userId:   PROBE_USER_ID,
-            role:     'teacher',
         })
     } catch (e) {
         thrownError = e
@@ -181,6 +159,8 @@ async function main() {
     stopCapture()
     kv('returnedValue',  returnedValue ? JSON.stringify(returnedValue).slice(0, 80) : '(none)')
     kv('thrownError',    thrownError ? `${thrownError.name}: ${thrownError.message?.slice(0, 200)}` : '(none)')
+    kv('thrown.type',    thrownError?.type        ?? '(none)')
+    kv('thrown.code',    thrownError?.originalCode ?? '(none)')
     kv('captured logs',  captured.length)
 
     // Step 4: assertions.
@@ -192,47 +172,63 @@ async function main() {
         if (!cond) pass = false
     }
 
-    // Find the safety-override log line.
-    const overrideLine = captured.find(c =>
-        typeof c.args[0] === 'string' && c.args[0].includes('proxy_safety_fallback_used'))
+    // Find the provider_not_configured log line — the new B4 specific log.
+    const providerNotConfiguredLine = captured.find(c =>
+        typeof c.args[0] === 'string' && c.args[0].includes('provider_not_configured'))
     assert(
-        'safety_override fired',
-        Boolean(overrideLine),
-        overrideLine ? overrideLine.args.slice(0, 2).map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ') : '(not found)',
+        '[ai-proxy] provider_not_configured fired',
+        Boolean(providerNotConfiguredLine),
+        providerNotConfiguredLine
+            ? providerNotConfiguredLine.args.slice(0, 2)
+                .map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
+            : '(not found)',
     )
 
-    // Find the proxy_success line — should NOT exist (we don't want a
-    // primary-path success in this test; the proxy returns 503).
+    // Find the legacy log lines — should NOT exist post-B4.
+    const legacySafetyLine = captured.find(c =>
+        typeof c.args[0] === 'string' && c.args[0].includes('proxy_safety_fallback_used'))
+    assert(
+        'NO proxy_safety_fallback_used (override removed)',
+        !legacySafetyLine,
+        legacySafetyLine ? '(unexpected — safety override should be deleted)' : '(correctly absent)',
+    )
+    const legacyFallbackLine = captured.find(c =>
+        typeof c.args[0] === 'string' && c.args[0].includes('proxy_error_fallback_used'))
+    assert(
+        'NO proxy_error_fallback_used (scoped fallback removed)',
+        !legacyFallbackLine,
+        legacyFallbackLine ? '(unexpected — scoped fallback should be deleted)' : '(correctly absent)',
+    )
+
+    // Find proxy_success — should NOT exist (proxy returns 503 in this test).
     const successLine = captured.find(c =>
         typeof c.args[0] === 'string' && c.args[0].includes('proxy_success'))
     assert(
-        'proxy_success NOT fired',
+        'NO proxy_success (proxy errored, expected)',
         !successLine,
         successLine ? '(unexpected success log)' : '(correctly absent)',
     )
 
-    // The fallback should have been attempted; in this Node environment
-    // it'll error out (no netlify dev, no OPENAI_API_KEY). That's the
-    // expected outcome — the test validates the BRANCH FIRES, not the
-    // fallback succeeds.
+    // callAI must throw a clean error.
     assert(
-        'callAI threw (fallback also has no key, expected)',
+        'callAI threw',
         Boolean(thrownError),
         thrownError?.message?.slice(0, 80) ?? '(no error — unexpected)',
     )
-    if (thrownError) {
-        const msg = thrownError.message ?? ''
-        const looksLikeFallbackFailure =
-            /AI proxy (network|HTTP)/i.test(msg)
-            || /OPENAI_API_KEY/i.test(msg)
-            || /No OPENAI_API_KEY/i.test(msg)
-            || /ECONNREFUSED|fetch failed/i.test(msg)
-        assert(
-            'thrown error is fallback-side, not safety-override',
-            looksLikeFallbackFailure,
-            looksLikeFallbackFailure ? '(matches expected fallback failure shape)' : `(message: ${msg})`,
-        )
-    }
+
+    // The thrown error's type must be the new specific type.
+    assert(
+        'thrown.type === AI_PROVIDER_NOT_CONFIGURED',
+        thrownError?.type === 'AI_PROVIDER_NOT_CONFIGURED',
+        thrownError?.type ? `(got "${thrownError.type}")` : '(no .type)',
+    )
+
+    // The thrown error's message must mention OPENAI_API_KEY (ops-actionable).
+    assert(
+        'thrown message mentions OPENAI_API_KEY',
+        /OPENAI_API_KEY/i.test(thrownError?.message ?? ''),
+        thrownError?.message ? `(message: ${thrownError.message.slice(0, 80)})` : '(no message)',
+    )
 
     // Step 5: query ai_requests.
     header('5) DB verification')
@@ -241,7 +237,7 @@ async function main() {
         .select('id, status, error, app_source, school_id, request_origin, metadata, created_at')
         .eq('user_id', PROBE_USER_ID)
         .order('created_at', { ascending: false })
-        .limit(2)
+        .limit(3)
     if (qErr) {
         kv('query error', qErr.message)
         pass = false
@@ -252,7 +248,7 @@ async function main() {
         }
         const newRow = rows.find(r => (r.metadata?.feature ?? '') === 'grading')
         assert(
-            'new row inserted by proxy (status=denied, OPENAI_API_KEY...)',
+            'new row inserted by proxy (status=denied)',
             Boolean(newRow) && newRow.status === 'denied' && /OPENAI_API_KEY/i.test(newRow.error ?? ''),
             newRow ? `id=${newRow.id} error="${newRow.error}"` : '(not found)',
         )
@@ -265,15 +261,7 @@ async function main() {
         )
     }
 
-    // Step 6: report new row id for service-role cleanup.
-    //
-    // ai_requests has SELECT policy for authenticated but NO DELETE
-    // policy — only service-role can delete. The probe user's session
-    // (used by sbAuth) cannot DELETE. The cleanup must run via either:
-    //   (a) Supabase MCP execute_sql (service-role bypass) — what we use
-    //   (b) A SECURITY DEFINER RPC dedicated to test-row cleanup — overkill
-    //       for one-shot probe artefacts
-    // We surface the row id so the caller can DELETE it via MCP.
+    // Step 6: surface new row id for service-role cleanup.
     header('6) New row(s) for service-role cleanup')
     const { data: rowsToCleanup } = await sbAuth
         .from('ai_requests')
