@@ -153,3 +153,108 @@ export async function submitAssignment({ assignmentId, content } = {}) {
     if (error) throw error
     return Array.isArray(data) ? data[0] : data
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Phase B27.2 — write-path consolidation (2026-05-08)
+//
+// Four new RPC wrappers replace the last direct supabase.from(...).insert/.update
+// sites in pages/Assignments.jsx. Each underlying RPC:
+//   * SECURITY DEFINER + locked search_path
+//   * Permission gate: is_staff_of_school(class.school_id) OR
+//     has_permission('assignments.write')
+//   * Refuses during impersonation
+//   * Sets app.audit_context with surface='helm.assignments' so the
+//     AFTER trigger's audit row picks up surface metadata
+//   * Emits a higher-level "semantic" audit row from the RPC body
+//     (assignment.distributed / submission.received / submission.graded /
+//     submission.ai_graded) IN ADDITION to the trigger's per-row
+//     student_assignment.* event. Both granularities are queryable.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Bulk-distribute an assignment to a list of students. Idempotent —
+ * pre-existing (assignment_id, student_id) pairs are skipped via
+ * NOT EXISTS, so re-clicking "Assign to All" is safe (returns 0
+ * inserted but the assignment.distributed audit row is still emitted
+ * for the operator's intent).
+ *
+ * @param {{assignmentId: string, studentIds: string[]}} args
+ * @returns {Promise<number>} count of newly-inserted rows
+ */
+export async function distributeAssignment({ assignmentId, studentIds } = {}) {
+    if (!assignmentId) throw new Error('assignmentId is required')
+    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+        throw new Error('studentIds must be a non-empty array')
+    }
+    const { data, error } = await supabase.rpc('bridge_distribute_assignment', {
+        p_assignment_id: assignmentId,
+        p_student_ids:   studentIds,
+    })
+    if (error) throw error
+    // RPC returns a scalar integer. supabase-js wraps scalar returns
+    // in `data` directly (not an array).
+    return typeof data === 'number' ? data : Number(data) || 0
+}
+
+/**
+ * Teacher-side override: mark a row as 'submitted' without going
+ * through the student-self submit flow. Status-only update. Audit:
+ * submission.received (semantic) + student_assignment.updated (trigger).
+ *
+ * @param {string} studentAssignmentId
+ * @returns {Promise<{id, assignment_id, student_id, status, ...}>}
+ */
+export async function markSubmissionReceived(studentAssignmentId) {
+    if (!studentAssignmentId) throw new Error('studentAssignmentId is required')
+    const { data, error } = await supabase.rpc('bridge_mark_submission_received', {
+        p_student_assignment_id: studentAssignmentId,
+    })
+    if (error) throw error
+    return Array.isArray(data) ? data[0] : data
+}
+
+/**
+ * Record a teacher grade + optional feedback. Sets status='graded'.
+ * Audit: submission.graded (semantic, with previous_grade) +
+ * student_assignment.updated (trigger, with grade + status diff).
+ *
+ * @param {{studentAssignmentId: string, grade: string, feedback?: string|null}} args
+ * @returns {Promise<{id, ..., grade, status, feedback}>}
+ */
+export async function gradeSubmission({ studentAssignmentId, grade, feedback = null } = {}) {
+    if (!studentAssignmentId) throw new Error('studentAssignmentId is required')
+    if (grade == null) throw new Error('grade is required')
+    const { data, error } = await supabase.rpc('bridge_grade_submission', {
+        p_student_assignment_id: studentAssignmentId,
+        p_grade:                 String(grade),
+        p_feedback:              feedback,
+    })
+    if (error) throw error
+    return Array.isArray(data) ? data[0] : data
+}
+
+/**
+ * Record an AI grading result. Distinct from gradeSubmission because
+ * it does NOT change status — teacher still has the final say. Stamps
+ * ai_graded_at = now() server-side. Audit: submission.ai_graded
+ * (semantic) + student_assignment.updated (trigger, with ai_grade +
+ * submission_hash diff).
+ *
+ * @param {{studentAssignmentId: string, aiGrade: string,
+ *           feedback: string, submissionHash: string}} args
+ * @returns {Promise<{id, ai_grade, feedback, submission_hash, ai_graded_at, ...}>}
+ */
+export async function recordAiGrade({ studentAssignmentId, aiGrade, feedback, submissionHash } = {}) {
+    if (!studentAssignmentId) throw new Error('studentAssignmentId is required')
+    if (aiGrade == null) throw new Error('aiGrade is required')
+    if (feedback == null) throw new Error('feedback is required')
+    if (submissionHash == null) throw new Error('submissionHash is required')
+    const { data, error } = await supabase.rpc('bridge_record_ai_grade', {
+        p_student_assignment_id: studentAssignmentId,
+        p_ai_grade:              String(aiGrade),
+        p_ai_feedback:           String(feedback),
+        p_submission_hash:       String(submissionHash),
+    })
+    if (error) throw error
+    return Array.isArray(data) ? data[0] : data
+}

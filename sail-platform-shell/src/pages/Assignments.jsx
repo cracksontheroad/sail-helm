@@ -2,6 +2,16 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../lib/AuthContext'
 import { callAI } from '../services/ai'
+// B27.2 — write-path service helpers replacing direct supabase.from(...)
+// .insert / .update calls. Each wraps a SECURITY DEFINER bridge_* RPC
+// with permission gates + audit emission.
+import {
+    createAssignment as createAssignmentRpc,
+    distributeAssignment,
+    markSubmissionReceived,
+    gradeSubmission,
+    recordAiGrade,
+} from '../services/assignments'
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 const BATCH_SIZE = 5                      // students per batch when grading entire class
@@ -239,21 +249,33 @@ export default function Assignments() {
         setGradeInputs(grades)
     }
 
+    // ── B27.2 write-path consolidation (2026-05-08) ────────────────────
+    // Every write below routes through a SECURITY DEFINER bridge_* RPC
+    // via the service helpers. Each helper:
+    //   * permission-gates server-side (is_staff_of_school OR
+    //     assignments.write); refuses during impersonation
+    //   * sets app.audit_context so the AFTER trigger emits enriched
+    //     metadata (surface='helm.assignments', operation=...)
+    //   * emits a higher-level semantic audit row from the RPC body
+    //     (assignment.distributed / submission.received / submission.graded
+    //     / submission.ai_graded) IN ADDITION to the trigger's per-row
+    //     student_assignment.* event.
+    // Helm post-B27.2 has zero direct supabase.from(...) writes.
+
     async function createAssignment() {
         if (!newTitle.trim() || !selectedClass) {
             alert('Enter a title and select a class')
             return
         }
-
-        const { error } = await supabase
-            .from('assignments')
-            .insert([{ title: newTitle.trim(), class_id: selectedClass }])
-
-        if (error) {
-            alert(error.message)
-        } else {
+        try {
+            await createAssignmentRpc({
+                classId: selectedClass,
+                title:   newTitle.trim(),
+            })
             setNewTitle('')
             loadAssignments()
+        } catch (err) {
+            alert(err.message || 'Failed to create assignment')
         }
     }
 
@@ -268,49 +290,50 @@ export default function Assignments() {
         }
 
         setAssigning(true)
-        const records = students.map(s => ({
-            student_id: s.id,
-            assignment_id: selectedAssignment,
-            status: 'assigned',
-        }))
-
-        const { error } = await supabase.from('student_assignments').insert(records)
-
-        setAssigning(false)
-
-        if (error) {
-            alert(error.message)
-        } else {
+        try {
+            const inserted = await distributeAssignment({
+                assignmentId: selectedAssignment,
+                studentIds:   students.map(s => s.id),
+            })
+            console.log(
+                `[assignToAllStudents] distributed to ${students.length} students; ${inserted} new rows`,
+            )
             loadStudentAssignments()
+        } catch (err) {
+            alert(err.message || 'Failed to distribute assignment')
+        } finally {
+            setAssigning(false)
         }
     }
 
     async function markSubmitted(studentId) {
         const row = studentAssignments[studentId]
         if (!row) return
-
-        const { error } = await supabase
-            .from('student_assignments')
-            .update({ status: 'submitted' })
-            .eq('id', row.id)
-
-        if (error) alert(error.message)
-        else loadStudentAssignments()
+        try {
+            await markSubmissionReceived(row.id)
+            loadStudentAssignments()
+        } catch (err) {
+            alert(err.message || 'Failed to mark submitted')
+        }
     }
 
     async function saveGrade(studentId) {
         const row = studentAssignments[studentId]
         if (!row) return
-
         const grade = gradeInputs[studentId] ?? ''
-
-        const { error } = await supabase
-            .from('student_assignments')
-            .update({ grade, status: 'graded' })
-            .eq('id', row.id)
-
-        if (error) alert(error.message)
-        else loadStudentAssignments()
+        try {
+            await gradeSubmission({
+                studentAssignmentId: row.id,
+                grade,
+                // saveGrade today doesn't pass feedback — the rubric/AI
+                // feedback is set on the SAME column by gradeStudent
+                // below. Leaving it null preserves current behavior.
+                feedback: null,
+            })
+            loadStudentAssignments()
+        } catch (err) {
+            alert(err.message || 'Failed to save grade')
+        }
     }
 
     // ─── Core grading logic (single student) ────────────────────────────────
@@ -370,21 +393,23 @@ export default function Assignments() {
             throw new Error(`AI call failed: ${aiErr.message}`)
         }
 
-        const updatePayload = {
-            ai_grade: result.suggested_grade,
-            feedback: JSON.stringify({
-                overall: result.overall,
-                rubric: result.rubric,
-            }),
-            submission_hash: currentHash,
+        // B27.2 — AI-grade write goes through bridge_record_ai_grade
+        // RPC. Server stamps ai_graded_at = now() and emits a
+        // submission.ai_graded audit row. Status deliberately stays
+        // unchanged (teacher's saveGrade handles the 'graded' transition).
+        try {
+            await recordAiGrade({
+                studentAssignmentId: row.id,
+                aiGrade:             result.suggested_grade,
+                feedback:            JSON.stringify({
+                    overall: result.overall,
+                    rubric:  result.rubric,
+                }),
+                submissionHash:      currentHash,
+            })
+        } catch (err) {
+            throw new Error(`AI grade save failed: ${err.message}`)
         }
-
-        const { error } = await supabase
-            .from('student_assignments')
-            .update(updatePayload)
-            .eq('id', row.id)
-
-        if (error) throw new Error(`DB update failed: ${error.message}`)
 
         return 'graded'
     }
