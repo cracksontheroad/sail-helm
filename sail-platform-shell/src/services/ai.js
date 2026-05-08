@@ -43,7 +43,7 @@
 // to maintain the contract.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { supabase } from '../lib/supabaseClient'
+import { supabase } from '../lib/supabaseClient.js'
 
 const NETLIFY_AI_PROXY_URL = '/.netlify/functions/ai-proxy'
 
@@ -98,12 +98,32 @@ const NETLIFY_AI_PROXY_URL = '/.netlify/functions/ai-proxy'
 // resolves to `undefined` when unset; `undefined === 'true'` is false.
 // The literal string 'true' is the only enable value.
 // ─────────────────────────────────────────────────────────────────────────────
-const USE_AI_PROXY_ONLY    = import.meta.env.VITE_USE_AI_PROXY_ONLY === 'true'
-const _LEGACY_STRICT_FLAG  = import.meta.env.VITE_STRICT_AI_PROXY === 'true'  // Phase B2 alias
-const PROXY_ONLY           = USE_AI_PROXY_ONLY || _LEGACY_STRICT_FLAG
+// Universal env accessor: reads VITE_* keys from import.meta.env in Vite
+// builds (where Vite STATICALLY replaces each `import.meta.env.VITE_X`
+// literal at build time and tree-shakes the dead branch); falls through
+// to process.env in Node test runners (Vite's substitution leaves
+// `import.meta.env` undefined in Node ESM).
+//
+// Critical for tree-shake: the literal property accesses are preserved,
+// so Vite's transform sees them; the surrounding ternary only flips the
+// runtime branch. At Vite build time `_IS_VITE` constant-folds to true,
+// the bundler keeps the Vite-substituted literal, and the process.env
+// branch is dead-code-eliminated. Verified via bundle-SHA diff per flag.
+const _IS_VITE = typeof import.meta !== 'undefined' && Boolean(import.meta.env)
+const USE_AI_PROXY_ONLY = (
+    _IS_VITE
+        ? import.meta.env.VITE_USE_AI_PROXY_ONLY
+        : (typeof process !== 'undefined' ? process.env.VITE_USE_AI_PROXY_ONLY : undefined)
+) === 'true'
+const _LEGACY_STRICT_FLAG = (
+    _IS_VITE
+        ? import.meta.env.VITE_STRICT_AI_PROXY
+        : (typeof process !== 'undefined' ? process.env.VITE_STRICT_AI_PROXY : undefined)
+) === 'true'  // Phase B2 alias
+const PROXY_ONLY      = USE_AI_PROXY_ONLY || _LEGACY_STRICT_FLAG
 // Kept as `STRICT_AI_PROXY` for back-compat with any internal log strings
 // or downstream readers; semantically identical to PROXY_ONLY.
-const STRICT_AI_PROXY      = PROXY_ONLY
+const STRICT_AI_PROXY = PROXY_ONLY
 
 /**
  * Map a raw error from invokeSailAiProxy into a teacher-safe Error.
@@ -205,9 +225,23 @@ export async function callAI({
         // window between flipping PROXY_ONLY=true and setting the secret.
         // This branch is REMOVED as part of Phase B4 when the Netlify
         // fallback is deleted.
+        //
+        // The deployed ai-proxy emits TWO distinct strings for this case:
+        //   ai_requests.error (DB, ops-facing): "OPENAI_API_KEY not configured"
+        //   HTTP response body  (caller-facing): "AI provider not configured"
+        // services/ai.js receives the response-body string as e.message. The
+        // earlier regex-form `/OPENAI_API_KEY not configured/i` would NEVER
+        // have matched at runtime — it only appears in the DB row. We match
+        // BOTH strings now (a) for robustness against future Edge-Function
+        // message alignment, and (b) so a sharp-eyed grep on either side
+        // surfaces the same intent. Discovered + fixed during Phase B4-prep
+        // white-box test planning, 2026-05-07.
         const isMissingProviderKey =
             code === 'PROVIDER_ERROR'
-            && /OPENAI_API_KEY not configured/i.test(message)
+            && (
+                /OPENAI_API_KEY not configured/i.test(message)
+                || /AI provider not configured/i.test(message)
+            )
         if (isMissingProviderKey) {
             console.warn('[ai-proxy] proxy_safety_fallback_used', {
                 school_id:    schoolId,
@@ -313,8 +347,40 @@ async function invokeSailAiProxy({ system, prompt, schoolId, feature }) {
     })
 
     if (error) {
+        // Phase B4-prep follow-up (2026-05-08): supabase-js v2.x raises a
+        // generic FunctionsHttpError on any non-2xx response and discards
+        // the body. The original code path here threw with code='INVOKE_ERROR',
+        // which meant the structured proxy codes (PROVIDER_ERROR,
+        // CONSENT_REQUIRED, APP_NOT_ENABLED, RATE_LIMITED, etc.) were
+        // *invisible* to callAI's catch block — making the safety override
+        // and the scoped fallback paths effectively dead code from a real
+        // Helm session.
+        //
+        // FunctionsHttpError exposes the original Response via `error.context`.
+        // We re-read the body, and if it carries a structured `{code, error}`
+        // payload, throw with that code so callAI can branch correctly. Only
+        // when no structured body is recoverable do we fall back to the
+        // generic INVOKE_ERROR.
+        let proxyBody = null
+        try {
+            if (error.context && typeof error.context.json === 'function') {
+                proxyBody = await error.context.json()
+            } else if (error.context && typeof error.context.text === 'function') {
+                const text = await error.context.text()
+                try { proxyBody = JSON.parse(text) } catch { /* not json */ }
+            }
+        } catch { /* unreadable body — fall through to INVOKE_ERROR */ }
+
+        if (proxyBody && (proxyBody.code || proxyBody.error)) {
+            const e = new Error(proxyBody.error || `ai-proxy ${proxyBody.code || 'error'}`)
+            e.code      = proxyBody.code || 'DENIED'
+            e.proxyData = proxyBody
+            e.cause     = error
+            throw e
+        }
+
         const e = new Error(`ai-proxy invoke error: ${error.message || 'unknown'}`)
-        e.code = 'INVOKE_ERROR'
+        e.code  = 'INVOKE_ERROR'
         e.cause = error
         throw e
     }
