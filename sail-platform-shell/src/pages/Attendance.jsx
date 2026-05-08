@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
 import { CAN } from '../lib/permissions'
@@ -193,6 +193,35 @@ export default function AttendancePage() {
         setSummary(null)  // any change invalidates the prior save summary
     }
 
+    // ── Phase C — live counts + bulk-mark helpers ──────────────────
+    // liveCounts reflects the PENDING state (the marks the operator
+    // is about to commit), distinct from `summary` (the post-save
+    // banner showing the persisted state). Memoized over `marks`
+    // and `roster` so the summary bar updates instantly per click.
+    const liveCounts = useMemo(() => {
+        let present = 0, absent = 0, late = 0
+        for (const s of roster) {
+            const status = marks[s.id] || 'present'
+            if (status === 'present')      present++
+            else if (status === 'absent')  absent++
+            else if (status === 'late')    late++
+        }
+        return { present, absent, late, total: roster.length }
+    }, [marks, roster])
+
+    // Phase C — common real-world flow: "everyone is present, then
+    // mark exceptions". Sets every roster member to 'present' in one
+    // click. Doesn't auto-save — the operator still clicks Save after
+    // adjusting exceptions. Silent override: any prior marks the
+    // operator made get reset (KISS — they can refresh the page to
+    // restore the persisted state, or click again on the exceptions).
+    const markAllPresent = () => {
+        const next = {}
+        for (const s of roster) next[s.id] = 'present'
+        setMarks(next)
+        setSummary(null)
+    }
+
     // Phase B — explicit "Start register" action. Calls the create
     // RPC (which also emits attendance.session_started exactly once)
     // and re-runs refresh() so the editor renders.
@@ -338,6 +367,61 @@ export default function AttendancePage() {
                         <span style={{ fontSize: 12, color: '#7a8290' }}>
                             Only teachers and admins can start a register.
                         </span>
+                    )}
+                </div>
+            )}
+
+            {/* ── Phase C — live summary bar + "Mark all present"
+                  Both rendered only when a session exists (i.e.
+                  marking is meaningful). Counts derive from `marks`
+                  state so they update instantly per click. */}
+            {session && roster.length > 0 && !loading && (
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    flexWrap: 'wrap',
+                    padding: '8px 12px',
+                    margin: '0 0 10px',
+                    borderRadius: 6,
+                    background: '#f7f9fc',
+                    border: '1px solid #e3e6eb',
+                    fontSize: 12.5,
+                    color: '#3a4654',
+                }}>
+                    <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                        <span>
+                            Present <strong style={{ color: '#1f8a4d' }}>{liveCounts.present}</strong>
+                        </span>
+                        <span>
+                            Absent <strong style={{ color: liveCounts.absent > 0 ? '#a04545' : '#3a4654' }}>{liveCounts.absent}</strong>
+                        </span>
+                        <span>
+                            Late <strong style={{ color: liveCounts.late > 0 ? '#a06c20' : '#3a4654' }}>{liveCounts.late}</strong>
+                        </span>
+                        <span style={{ color: '#7a8290' }}>
+                            / {liveCounts.total} total
+                        </span>
+                    </div>
+                    {canMark && (
+                        <button
+                            type="button"
+                            onClick={markAllPresent}
+                            disabled={saving}
+                            title="Set every student to present (you can then flip exceptions)"
+                            style={{
+                                fontSize: 12,
+                                padding: '4px 10px',
+                                borderRadius: 4,
+                                border: '1px solid #d4d8de',
+                                background: '#fff',
+                                color: '#3a4654',
+                                cursor: saving ? 'default' : 'pointer',
+                            }}
+                        >
+                            Mark all present
+                        </button>
                     )}
                 </div>
             )}
