@@ -14,6 +14,7 @@ import Assignments from './pages/Assignments'
 import Gradebook from './pages/Gradebook'
 import ClassPage from './pages/Class'
 import AttendancePage from './pages/Attendance'
+import BehaviourPage from './pages/Behaviour'
 import MyAssignmentsPage from './pages/MyAssignments'
 
 /**
@@ -329,6 +330,10 @@ function App() {
                     RPC's own gate enforces that, the page renders
                     read-only for non-staff). */}
                 <Route path="/class/:classId/attendance" element={<AttendancePage />} />
+                {/* Phase A — behaviour vertical. Same RLS posture as
+                    /attendance: any school member can land on the
+                    page; only staff can log via the RPC's gate. */}
+                <Route path="/class/:classId/behaviour" element={<BehaviourPage />} />
                 {CAN.viewGradebook(role) && (
                     <Route path="/gradebook" element={<Gradebook />} />
                 )}

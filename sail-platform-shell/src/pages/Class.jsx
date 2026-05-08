@@ -187,6 +187,12 @@ export default function ClassPage() {
                 >
                     Take Register →
                 </Link>
+                <Link
+                    to={`/class/${classId}/behaviour`}
+                    style={{ fontSize: 12.5, color: '#3b6cd8', marginLeft: 12 }}
+                >
+                    Behaviour →
+                </Link>
             </div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
                 {klass.school?.name ? <>School: <strong>{klass.school.name}</strong></> : null}
