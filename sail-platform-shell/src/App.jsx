@@ -13,6 +13,7 @@ import Dashboard from './pages/Dashboard'
 import Assignments from './pages/Assignments'
 import Gradebook from './pages/Gradebook'
 import ClassPage from './pages/Class'
+import AttendancePage from './pages/Attendance'
 import MyAssignmentsPage from './pages/MyAssignments'
 
 /**
@@ -322,6 +323,12 @@ function App() {
                   false for student).
                 */}
                 <Route path="/class/:classId" element={<ClassPage />} />
+                {/* Phase A — attendance vertical. Same RLS posture as
+                    /class/:classId: any school member can land on the
+                    page; only staff can mark (the bridge_create_*
+                    RPC's own gate enforces that, the page renders
+                    read-only for non-staff). */}
+                <Route path="/class/:classId/attendance" element={<AttendancePage />} />
                 {CAN.viewGradebook(role) && (
                     <Route path="/gradebook" element={<Gradebook />} />
                 )}

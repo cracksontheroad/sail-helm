@@ -175,6 +175,18 @@ export default function ClassPage() {
                 {klass.subject && (
                     <span style={{ fontSize: 13, color: '#777' }}>{klass.subject}</span>
                 )}
+                {/* Phase A — attendance entry point. Sits on the header
+                    so it's discoverable from the canonical class page.
+                    Read-only RLS lets the link render for any school
+                    member; the page itself enforces "only staff can
+                    mark" via the RPC gate. */}
+                <span style={{ flex: 1 }} />
+                <Link
+                    to={`/class/${classId}/attendance`}
+                    style={{ fontSize: 12.5, color: '#3b6cd8' }}
+                >
+                    Take Register →
+                </Link>
             </div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
                 {klass.school?.name ? <>School: <strong>{klass.school.name}</strong></> : null}
