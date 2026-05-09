@@ -52,6 +52,7 @@ import {
     getActionMeta,
     TIMELINE_ACTIONS,
     TIMELINE_PHASES,
+    MAX_ERROR_RATE,
 } from '../src/lib/timelineTelemetry.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -154,11 +155,37 @@ function simulateMixedOutcome() {
     return withFixedNow(base + 10 * 3000 + 2000, buildSessionSnapshot)
 }
 
+function simulateLowError() {
+    _resetTimelineMetrics()
+    const base = 500_000
+    // 10 cycles, 9 success + 1 error → 10% error rate.
+    // Currently above the 5% threshold, so the hint should be OFF and
+    // the recommendation should KEEP CONFIRM. If the threshold is ever
+    // tuned to 10% or higher, this scenario flips to REMOVE — and the
+    // CLI will surface that change instantly. The single failure sits
+    // in the middle of the trace (index 4), not trailing.
+    const failures = new Set([4])
+    for (let i = 0; i < 10; i++) {
+        const t = base + i * 3000
+        emit(ATTENDANCE, TIMELINE_PHASES.CLICK,   t)
+        emit(ATTENDANCE, TIMELINE_PHASES.CONFIRM, t + 200)
+        if (failures.has(i)) {
+            emit(ATTENDANCE, TIMELINE_PHASES.ERROR, t + 350, {
+                error: 'transient network error',
+            })
+        } else {
+            emit(ATTENDANCE, TIMELINE_PHASES.SUCCESS, t + 350, { durationMs: 200 })
+        }
+    }
+    return withFixedNow(base + 10 * 3000 + 2000, buildSessionSnapshot)
+}
+
 const SCENARIOS = {
     'normal':         { run: simulateNormal,       description: '10 clean cycles' },
     'stress-slow':    { run: simulateStressSlow,   description: '5 cycles at 1100ms latency' },
     'stress-error':   { run: simulateStressError,  description: '5 cycles all failing' },
     'mixed-outcome':  { run: simulateMixedOutcome, description: '10 cycles, 8 success + 2 errors interleaved' },
+    'low-error':      { run: simulateLowError,     description: '10 cycles, 9 success + 1 error (10% error rate)' },
 }
 
 // ── Decision signal ───────────────────────────────────────────────────────
@@ -188,15 +215,21 @@ function computeDecisionSignal(snap, action) {
     const successRate = total > 0 ? recent.success / total : null
     const errorRate   = total > 0 ? recent.error   / total : null
 
+    // Recommendation reason — picks the FIRST gate that blocks the
+    // hint, mirroring the order in `shouldHintConfirmRemoval`. Keeps
+    // the message specific so the dev knows which threshold to look
+    // at if they disagree with the verdict.
     let recommendation
+    const errRate = recent.confirm > 0 ? recent.error / recent.confirm : 0
+    const sucRate = recent.confirm > 0 ? recent.success / recent.confirm : 0
     if (total < 5) {
         recommendation = 'INSUFFICIENT DATA'
     } else if (hintFires) {
         recommendation = 'REMOVE CONFIRM (heuristic fires; click-confirm friction without safety value)'
-    } else if (recent.error > 0) {
-        recommendation = 'KEEP CONFIRM (errors present; confirm catches real failures)'
-    } else if (recent.confirm > 0 && (recent.success / recent.confirm) < 0.95) {
-        recommendation = 'KEEP CONFIRM (success rate below 0.95 threshold)'
+    } else if (errRate > MAX_ERROR_RATE) {
+        recommendation = `KEEP CONFIRM (error rate ${(errRate * 100).toFixed(1)}% above ${(MAX_ERROR_RATE * 100).toFixed(1)}% threshold)`
+    } else if (recent.confirm > 0 && sucRate < 0.95) {
+        recommendation = `KEEP CONFIRM (success rate ${(sucRate * 100).toFixed(1)}% below 95% threshold)`
     } else {
         recommendation = 'KEEP CONFIRM (heuristic silent; reason unclear — inspect manually)'
     }
@@ -230,8 +263,8 @@ function printDecisionSignal(label, signal, prevSignal = null) {
     }
     const r = signal.recent
     console.log(`  recent: ${r.click}c ${r.confirm}f ${r.success}s ${r.error}e`)
-    console.log(`  recent success rate: ${fmtRate(signal.successRate)} (${r.success}/${r.click})`)
-    console.log(`  recent error rate:   ${fmtRate(signal.errorRate)} (${r.error}/${r.click})`)
+    console.log(`  recent success rate: ${fmtRate(signal.successRate)} (${r.success}/${r.click})  [threshold ≥ 95.0%]`)
+    console.log(`  recent error rate:   ${fmtRate(signal.errorRate)} (${r.error}/${r.click})  [threshold ≤ ${(MAX_ERROR_RATE * 100).toFixed(1)}%]`)
     console.log(`  invariants:          ${signal.validation.valid ? 'valid' : 'INVALID'}`)
     if (!signal.validation.valid) {
         for (const issue of signal.validation.issues) console.log(`    - ${issue}`)

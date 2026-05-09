@@ -101,50 +101,53 @@ export function getActionMeta(action) {
  * "Consider removing confirm" — flags actions whose confirm step
  * is no longer pulling its weight. A confirm is justified when
  * users either hesitate at it (giving them a chance to back out)
- * OR when the action sometimes fails (giving them a chance to
- * see a problem before committing). When BOTH of those are
- * absent — high confirm rate, near-zero error rate, enough
- * volume to trust the signal — the confirm step is friction
- * without safety value.
+ * OR when the action fails OFTEN ENOUGH that the confirm catches
+ * something. When BOTH of those are absent — high confirm rate,
+ * low error rate, enough volume to trust the signal — the
+ * confirm step is friction without safety value.
  *
  * Pure over a slot. The caller decides whether to feed lifetime
  * or recent data; this function doesn't care. The panel feeds
  * `getRecentSlot(actionId)` so hints reflect *current* behaviour
- * rather than session-long blended history; that switch is what
- * lets fixes show up in the panel within seconds and stops old
- * bad data poisoning new decisions.
+ * rather than session-long blended history.
  *
- * Thresholds:
- *   * click >= MIN_HINT_CLICKS (5)  — volume guard at the funnel
- *                     entry point. Recent windows can be tiny;
- *                     this prevents single-click noise from
- *                     firing the hint. Replaces the previous
- *                     `confirm >= 5` gate, which was redundant
- *                     under lifetime data (click >= confirm
- *                     anyway) but suppressed legitimate recent
- *                     hints that hadn't accumulated 5 confirms
- *                     yet.
+ * Thresholds (all exported for the CLI to display alongside the
+ * verdict; tests cover boundary behaviour at each):
+ *   * click >= MIN_HINT_CLICKS (5) — volume guard. Recent windows
+ *                     can be tiny; this prevents single-click
+ *                     noise from firing the hint.
  *   * confirm >= 1  — ratio safety. Without at least one confirm,
- *                     `success / confirm` is NaN. Defensive
- *                     against a corrupt slot where success > 0
- *                     but confirm = 0 (which would otherwise
- *                     make the ratio Infinity and pass the
- *                     0.95 gate spuriously).
+ *                     `success / confirm` is NaN, and `error /
+ *                     confirm` would be Infinity for any non-zero
+ *                     error count.
+ *   * error / confirm <= MAX_ERROR_RATE (0.05) — error rate gate.
+ *                     REPLACES the previous strict `error === 0`
+ *                     check. The strict zero was over-conservative:
+ *                     it treated 1/100 errors (1%) and 5/10 errors
+ *                     (50%) as identical "block hint" cases. The
+ *                     rate-based gate distinguishes them, so a
+ *                     near-perfect run with one statistical blip
+ *                     still surfaces the friction-removal hint
+ *                     while a real failure mode keeps the confirm
+ *                     in place. 5% chosen as a reasonable starting
+ *                     threshold; tweak in source if it proves too
+ *                     loose / too strict in practice.
  *   * success / confirm >= 0.95 — near-certain follow-through
- *                     after confirming. If 1 in 20 fails after
- *                     confirm, the confirm IS catching something.
- *   * error === 0   — strict zero. A single error in this volume
- *                     is the difference between "confirm is
- *                     friction" and "confirm catches something".
+ *                     after confirming. The two ratio gates
+ *                     together carve out a "near-perfect"
+ *                     operating envelope where the confirm step
+ *                     adds friction without safety value.
  *
- * The thresholds are deliberately simple integers/ratios — no
- * config, no tuning, no time decay. If they prove too strict or
- * too loose, change them in this one place.
+ * The thresholds are deliberately simple constants — no config,
+ * no tuning, no time decay. If they prove wrong, change them in
+ * this one place; the CLI simulation suite + node:test boundary
+ * cases will surface the impact within seconds.
  *
  * @param {{click,confirm,success,error}|null|undefined} slot
  * @returns {boolean}
  */
-const MIN_HINT_CLICKS = 5
+export const MIN_HINT_CLICKS = 5
+export const MAX_ERROR_RATE  = 0.05   // 5%
 
 export function shouldHintConfirmRemoval(slot) {
     if (!slot) return false
@@ -158,7 +161,8 @@ export function shouldHintConfirmRemoval(slot) {
     const error   = slot.error   ?? 0
     if (click   < MIN_HINT_CLICKS) return false
     if (confirm < 1)               return false   // ratio safety
-    if (error   > 0)               return false
+    const errorRate = error / confirm
+    if (errorRate > MAX_ERROR_RATE) return false
     return (success / confirm) >= 0.95
 }
 

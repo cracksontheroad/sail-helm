@@ -104,10 +104,30 @@ test('hint — confirm = 0 but success > 0 (corrupt) → false (Infinity ratio g
     assert.equal(shouldHintConfirmRemoval({ click: 10, confirm: 0, success: 5, error: 0 }), false)
 })
 
-test('hint — error > 0 → false (errors are signal, not noise)', () => {
-    // Even one error blocks the hint, regardless of how many successes precede it.
-    assert.equal(shouldHintConfirmRemoval({ click: 100, confirm: 100, success: 99, error: 1 }), false)
-    assert.equal(shouldHintConfirmRemoval({ click: 5,   confirm: 5,   success: 5,  error: 1 }), false)
+test('hint — error rate ABOVE threshold (5%) → false', () => {
+    // 1/5 errors = 20% → above threshold, hint blocked.
+    // (4/5 success = 80%, also fails the success-rate gate, but the
+    //  error gate fires first. Either is sufficient to block.)
+    assert.equal(shouldHintConfirmRemoval({ click: 5, confirm: 5, success: 4, error: 1 }), false)
+    // 1/15 = 6.67% → just above 5% threshold.
+    assert.equal(shouldHintConfirmRemoval({ click: 15, confirm: 15, success: 14, error: 1 }), false)
+})
+
+test('hint — error rate BELOW threshold (5%) with high success rate → true', () => {
+    // 1/100 errors = 1%, 99/100 success = 99% → both pass; hint fires.
+    // Under the OLD strict `error === 0` rule, this returned false even
+    // though the error rate was negligible. The rate-based gate fixes
+    // the over-conservatism.
+    assert.equal(shouldHintConfirmRemoval({ click: 100, confirm: 100, success: 99, error: 1 }), true)
+})
+
+test('hint — error rate exactly AT threshold (5%) → true (strict-greater gate)', () => {
+    // 1/20 errors = 5% exactly. The gate is `errorRate > MAX_ERROR_RATE`
+    // (strict greater), so the boundary is INCLUDED in the hint.
+    // Verifies the boundary doesn't silently flip when the rate is at
+    // the documented threshold. (Still requires success rate ≥ 0.95;
+    // 19/20 = 95% exact.)
+    assert.equal(shouldHintConfirmRemoval({ click: 20, confirm: 20, success: 19, error: 1 }), true)
 })
 
 test('hint — success/confirm < 0.95 → false (rate threshold)', () => {
