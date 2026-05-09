@@ -268,6 +268,47 @@ function fmtDelta(curr, prev) {
     return `${sign}${(d * 100).toFixed(1)}pt`
 }
 
+const STALE_AFTER_DAYS = 30
+
+/**
+ * Format a [decided <iso> · <relative-age>] tag for inline display
+ * next to a rationale string. Returns the tag string + a `stale`
+ * boolean so the caller can decide whether to print a follow-up
+ * "consider re-running sweep" suggestion.
+ *
+ * Edge cases:
+ *   * Missing decidedAt → empty tag, not stale (the rationale line
+ *     still renders without temporal context).
+ *   * Unparseable decidedAt → falls back to the bare ISO string with
+ *     no relative age, not stale (defensive).
+ *   * Future-dated decidedAt → clamped to "today" (avoids "-3 days
+ *     ago" weirdness if a contributor sets a forward date).
+ *
+ * Output examples:
+ *   recent:  ` [decided 2026-05-09 · today]`
+ *   1 day:   ` [decided 2026-05-08 · 1 day ago]`
+ *   stale:   ` [decided 2026-02-10 · 88 days ago ⚠ stale]`
+ */
+function formatDecidedAtTag(decidedAt) {
+    if (!decidedAt) return { tag: '', stale: false }
+    const decidedMs = Date.parse(decidedAt)
+    if (Number.isNaN(decidedMs)) {
+        // Defensive: bare ISO string, no age math.
+        return { tag: ` [decided ${decidedAt}]`, stale: false }
+    }
+    const daysSince = Math.max(0, Math.floor((Date.now() - decidedMs) / 86_400_000))
+    const ageStr =
+        daysSince === 0 ? 'today'      :
+        daysSince === 1 ? '1 day ago'  :
+                          `${daysSince} days ago`
+    const stale     = daysSince > STALE_AFTER_DAYS
+    const staleMark = stale ? ' ⚠ stale' : ''
+    return {
+        tag:   ` [decided ${decidedAt} · ${ageStr}${staleMark}]`,
+        stale,
+    }
+}
+
 function printDecisionSignal(label, signal, prevSignal = null) {
     console.log(`\n=== DECISION SIGNAL — ${label} ===`)
     if (signal.empty) {
@@ -286,9 +327,15 @@ function printDecisionSignal(label, signal, prevSignal = null) {
     // Show the rationale + decided-at when this action runs under a
     // per-action override. Single line, kept compact. Only fires when
     // metadata is present, so non-overridden actions stay silent.
+    // Stale policies (older than STALE_AFTER_DAYS) get a one-line
+    // suggestion to re-run the sweep — the gentle nudge fires only
+    // when someone is already looking at the policy.
     if (eff.rationale) {
-        const dateTag = eff.decidedAt ? ` [decided ${eff.decidedAt}]` : ''
-        console.log(`  rationale: ${eff.rationale}${dateTag}`)
+        const { tag, stale } = formatDecidedAtTag(eff.decidedAt)
+        console.log(`  rationale: ${eff.rationale}${tag}`)
+        if (stale) {
+            console.log(`  → consider re-running sweep to validate this policy`)
+        }
     }
     console.log(`  invariants:          ${signal.validation.valid ? 'valid' : 'INVALID'}`)
     if (!signal.validation.valid) {
@@ -413,11 +460,16 @@ function runSweep(name) {
         + ` (success ${successPct.toFixed(1)}%, error ${errorPct.toFixed(1)}%)`)
     console.log(`  effective policy: success ≥ ${(eff.minSuccessRate * 100).toFixed(1)}%,`
         + ` error ≤ ${(eff.maxErrorRate * 100).toFixed(1)}%${policyTag}`)
-    // Surface the override's rationale + decided-at when present.
-    // This makes the policy auditable inline rather than archaeology.
+    // Surface the override's rationale + decided-at when present,
+    // including a relative-age tag and a stale marker if the policy
+    // is older than STALE_AFTER_DAYS. Auditable inline + nudges
+    // re-validation when the entry is aging.
     if (eff.rationale) {
-        const dateTag = eff.decidedAt ? ` [decided ${eff.decidedAt}]` : ''
-        console.log(`  rationale: ${eff.rationale}${dateTag}`)
+        const { tag, stale } = formatDecidedAtTag(eff.decidedAt)
+        console.log(`  rationale: ${eff.rationale}${tag}`)
+        if (stale) {
+            console.log(`  → consider re-running sweep to validate this policy`)
+        }
     }
 
     const summaries = []
