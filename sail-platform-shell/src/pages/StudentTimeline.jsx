@@ -5,6 +5,11 @@ import { markAttendancePresent } from '../services/attendance'
 import { resolveBehaviourEvent } from '../services/behaviour'
 import { markSubmissionReceived } from '../services/assignments'
 import { resolvePrimaryAction } from '../lib/resolvePrimaryAction'
+import {
+    logTimelineAction,
+    TIMELINE_ACTIONS,
+    TIMELINE_PHASES,
+} from '../lib/timelineTelemetry'
 
 /**
  * /schools/:schoolId/students/:studentId/timeline — Phase D
@@ -796,12 +801,25 @@ export default function StudentTimelinePage() {
         }
         const key = context.eventTs
         if (confirmingKey !== key) {
+            logTimelineAction({
+                action:  TIMELINE_ACTIONS.MARK_ASSIGNMENT,
+                phase:   TIMELINE_PHASES.CLICK,
+                rowType: 'assignment_assigned',
+                rowKey:  key,
+            })
             setConfirmingKey(key)
             return
         }
+        logTimelineAction({
+            action:  TIMELINE_ACTIONS.MARK_ASSIGNMENT,
+            phase:   TIMELINE_PHASES.CONFIRM,
+            rowType: 'assignment_assigned',
+            rowKey:  key,
+        })
         setConfirmingKey(null)
         setMarkingKey(key)
         setRecentlyUpdatedKey(key)
+        const start = performance.now()
         try {
             await markSubmissionReceived(context.studentAssignmentId)
             const rows = await getStudentTimeline({
@@ -819,7 +837,21 @@ export default function StudentTimelinePage() {
                 String(r.meta?.status).toLowerCase() === 'submitted'
             )
             if (updated?.ts) setRecentlyUpdatedKey(updated.ts)
+            logTimelineAction({
+                action:     TIMELINE_ACTIONS.MARK_ASSIGNMENT,
+                phase:      TIMELINE_PHASES.SUCCESS,
+                rowType:    'assignment_assigned',
+                rowKey:     key,
+                durationMs: performance.now() - start,
+            })
         } catch (err) {
+            logTimelineAction({
+                action:  TIMELINE_ACTIONS.MARK_ASSIGNMENT,
+                phase:   TIMELINE_PHASES.ERROR,
+                rowType: 'assignment_assigned',
+                rowKey:  key,
+                error:   err?.message || String(err),
+            })
             // eslint-disable-next-line no-console
             console.error('[Timeline] Mark submitted failed:', err)
         } finally {
@@ -855,15 +887,28 @@ export default function StudentTimelinePage() {
         const key = context.eventTs
         // First click → arm.
         if (confirmingKey !== key) {
+            logTimelineAction({
+                action:  TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR,
+                phase:   TIMELINE_PHASES.CLICK,
+                rowType: 'behaviour',
+                rowKey:  key,
+            })
             setConfirmingKey(key)
             return
         }
         // Second click → execute.
+        logTimelineAction({
+            action:  TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR,
+            phase:   TIMELINE_PHASES.CONFIRM,
+            rowType: 'behaviour',
+            rowKey:  key,
+        })
         setConfirmingKey(null)
         setMarkingKey(key)
         // Pre-highlight (same pattern as mark-present): immediate
         // visual ack, not optimistic data.
         setRecentlyUpdatedKey(key)
+        const start = performance.now()
         try {
             await resolveBehaviourEvent({ eventId: context.eventId })
             const rows = await getStudentTimeline({
@@ -882,7 +927,21 @@ export default function StudentTimelinePage() {
                 String(r.meta?.status).toLowerCase() === 'resolved'
             )
             if (updated?.ts) setRecentlyUpdatedKey(updated.ts)
+            logTimelineAction({
+                action:     TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR,
+                phase:      TIMELINE_PHASES.SUCCESS,
+                rowType:    'behaviour',
+                rowKey:     key,
+                durationMs: performance.now() - start,
+            })
         } catch (err) {
+            logTimelineAction({
+                action:  TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR,
+                phase:   TIMELINE_PHASES.ERROR,
+                rowType: 'behaviour',
+                rowKey:  key,
+                error:   err?.message || String(err),
+            })
             // eslint-disable-next-line no-console
             console.error('[Timeline] Resolve behaviour failed:', err)
         } finally {
@@ -903,6 +962,12 @@ export default function StudentTimelinePage() {
         const key = context.latestTs
         // First click on this row → arm confirmation, don't fire.
         if (confirmingKey !== key) {
+            logTimelineAction({
+                action:  TIMELINE_ACTIONS.MARK_PRESENT,
+                phase:   TIMELINE_PHASES.CLICK,
+                rowType: 'attendance',
+                rowKey:  key,
+            })
             setConfirmingKey(key)
             return
         }
@@ -911,6 +976,12 @@ export default function StudentTimelinePage() {
         // button visually flips out of the "Confirm" state the
         // moment the request starts; the disabled "Marking…"
         // state takes over without a flash of "Mark present".
+        logTimelineAction({
+            action:  TIMELINE_ACTIONS.MARK_PRESENT,
+            phase:   TIMELINE_PHASES.CONFIRM,
+            rowType: 'attendance',
+            rowKey:  key,
+        })
         setConfirmingKey(null)
         setMarkingKey(key)
         // Pre-highlight (optimistic VISUAL only, not optimistic
@@ -938,6 +1009,7 @@ export default function StudentTimelinePage() {
         //     stale highlight, no inconsistency, no manual
         //     rollback path.
         setRecentlyUpdatedKey(key)
+        const start = performance.now()
         try {
             await markAttendancePresent({
                 studentId,
@@ -975,7 +1047,21 @@ export default function StudentTimelinePage() {
                 String(r.meta?.status).toLowerCase() === 'present'
             )
             if (updated?.ts) setRecentlyUpdatedKey(updated.ts)
+            logTimelineAction({
+                action:     TIMELINE_ACTIONS.MARK_PRESENT,
+                phase:      TIMELINE_PHASES.SUCCESS,
+                rowType:    'attendance',
+                rowKey:     key,
+                durationMs: performance.now() - start,
+            })
         } catch (err) {
+            logTimelineAction({
+                action:  TIMELINE_ACTIONS.MARK_PRESENT,
+                phase:   TIMELINE_PHASES.ERROR,
+                rowType: 'attendance',
+                rowKey:  key,
+                error:   err?.message || String(err),
+            })
             // No toast system yet — surface to console so dev/QA
             // can see RLS/permission rejections, missing-session
             // (P0002), etc. The button re-enables via the finally
