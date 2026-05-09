@@ -217,6 +217,42 @@ test('getActionThresholds — non-overridden action returns global defaults', ()
     assert.equal(t.maxErrorRate,   MAX_ERROR_RATE)
 })
 
+// ── Override metadata (rationale + decidedAt) ──────────────────────────────
+
+test('ACTION_THRESHOLDS — attendance entry carries rationale + decidedAt', () => {
+    const entry = ACTION_THRESHOLDS[TIMELINE_ACTIONS.MARK_PRESENT]
+    assert.ok(entry.rationale, 'rationale present')
+    assert.ok(entry.rationale.includes('sweep'), 'rationale mentions the evidence source')
+    assert.equal(entry.decidedAt, '2026-05-09')
+})
+
+test('getActionThresholds — known action passes through rationale + decidedAt', () => {
+    const t = getActionThresholds(TIMELINE_ACTIONS.MARK_PRESENT)
+    assert.ok(t.rationale)
+    assert.equal(t.decidedAt, '2026-05-09')
+})
+
+test('getActionThresholds — unknown / non-overridden action has undefined metadata', () => {
+    const a = getActionThresholds('nope.unknown')
+    const b = getActionThresholds(TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR)
+    // Numeric thresholds still resolve; metadata fields are simply undefined.
+    assert.equal(a.rationale, undefined)
+    assert.equal(a.decidedAt, undefined)
+    assert.equal(b.rationale, undefined)
+    assert.equal(b.decidedAt, undefined)
+})
+
+test('shouldHintConfirmRemoval — heuristic ignores metadata fields', () => {
+    // Sanity: adding rationale/decidedAt to the override map didn't
+    // accidentally feed them into a numeric comparison. Same input,
+    // same verdict as before the metadata was added.
+    const slot = { click: 10, confirm: 10, success: 9, error: 1 }
+    assert.equal(
+        shouldHintConfirmRemoval(slot, { actionId: TIMELINE_ACTIONS.MARK_PRESENT }),
+        true,
+    )
+})
+
 // ── 3-tier resolution in shouldHintConfirmRemoval ──────────────────────────
 
 test('hint — opts.actionId for OVERRIDDEN action uses per-action thresholds', () => {

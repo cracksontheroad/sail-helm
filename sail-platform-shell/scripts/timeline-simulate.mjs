@@ -283,6 +283,13 @@ function printDecisionSignal(label, signal, prevSignal = null) {
     console.log(`  recent: ${r.click}c ${r.confirm}f ${r.success}s ${r.error}e`)
     console.log(`  recent success rate: ${fmtRate(signal.successRate)} (${r.success}/${r.click})  [threshold ≥ ${(eff.minSuccessRate * 100).toFixed(1)}%${succTag}]`)
     console.log(`  recent error rate:   ${fmtRate(signal.errorRate)} (${r.error}/${r.click})  [threshold ≤ ${(eff.maxErrorRate * 100).toFixed(1)}%${errTag}]`)
+    // Show the rationale + decided-at when this action runs under a
+    // per-action override. Single line, kept compact. Only fires when
+    // metadata is present, so non-overridden actions stay silent.
+    if (eff.rationale) {
+        const dateTag = eff.decidedAt ? ` [decided ${eff.decidedAt}]` : ''
+        console.log(`  rationale: ${eff.rationale}${dateTag}`)
+    }
     console.log(`  invariants:          ${signal.validation.valid ? 'valid' : 'INVALID'}`)
     if (!signal.validation.valid) {
         for (const issue of signal.validation.issues) console.log(`    - ${issue}`)
@@ -406,6 +413,12 @@ function runSweep(name) {
         + ` (success ${successPct.toFixed(1)}%, error ${errorPct.toFixed(1)}%)`)
     console.log(`  effective policy: success ≥ ${(eff.minSuccessRate * 100).toFixed(1)}%,`
         + ` error ≤ ${(eff.maxErrorRate * 100).toFixed(1)}%${policyTag}`)
+    // Surface the override's rationale + decided-at when present.
+    // This makes the policy auditable inline rather than archaeology.
+    if (eff.rationale) {
+        const dateTag = eff.decidedAt ? ` [decided ${eff.decidedAt}]` : ''
+        console.log(`  rationale: ${eff.rationale}${dateTag}`)
+    }
 
     const summaries = []
     for (const succ of SUCCESS_SWEEP_THRESHOLDS) {

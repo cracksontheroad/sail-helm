@@ -162,23 +162,34 @@ export const MIN_SUCCESS_RATE = 0.95   // 95%  — global default
  *   2. ACTION_THRESHOLDS[opts.actionId] (this map)
  *   3. Global defaults (MIN_SUCCESS_RATE, MAX_ERROR_RATE)
  *
+ * Entry shape:
+ *   {
+ *     minSuccessRate: number,    // required — drives the heuristic
+ *     maxErrorRate:   number,    // required — drives the heuristic
+ *     rationale?:     string,    // human-readable WHY (CLI displays it)
+ *     decidedAt?:     string,    // ISO date the override was set
+ *   }
+ *
+ * `rationale` + `decidedAt` are metadata only — never read by the
+ * heuristic. They exist so the override is defensible and reviewable
+ * months later: "why is attendance at 90/10?" gets a real answer
+ * inline with the entry, not a git-blame archaeology dig. Without
+ * them, overrides slowly become "mysterious constants nobody wants
+ * to touch".
+ *
  * Why per-action and not per-domain or per-row:
  *   * Per-domain ('attendance' vs 'behaviour') would couple the
  *     policy to the event-type taxonomy. The action is the actual
  *     thing being decided; tying thresholds to it is more honest.
  *   * Per-row would be over-engineering — there's no signal that
  *     individual rows behave differently from their action class.
- *
- * Override `attendance.mark_present` to (90% success, 10% error)
- * because the 2D sweep showed it would surface the friction-removal
- * hint at those thresholds — and the action itself is genuinely
- * low-stakes (state correction, reversible, non-destructive). Other
- * actions stay at the global 95%/5% policy.
  */
 export const ACTION_THRESHOLDS = Object.freeze({
     'attendance.mark_present': Object.freeze({
         minSuccessRate: 0.90,
         maxErrorRate:   0.10,
+        rationale:      '2D sweep: low-error scenario (90% success, 10% error) flips at (90%, 10%); action is reversible state-correction, low-stakes',
+        decidedAt:      '2026-05-09',
     }),
     // 'behaviour.resolve' and 'assignment.mark_submitted' fall
     // through to global defaults. Add an entry here when the sweep
@@ -190,12 +201,19 @@ export const ACTION_THRESHOLDS = Object.freeze({
  * override falls back to global defaults. Useful for the CLI's
  * "effective thresholds" display and for any consumer that needs
  * to know what gates the heuristic will use.
+ *
+ * Returns numeric thresholds always; passes through `rationale`
+ * + `decidedAt` only when an override entry exists. Consumers
+ * that don't care about metadata can safely ignore the extra
+ * fields — they're undefined for non-overridden actions.
  */
 export function getActionThresholds(actionId) {
     const override = ACTION_THRESHOLDS[actionId] || {}
     return {
         minSuccessRate: override.minSuccessRate ?? MIN_SUCCESS_RATE,
         maxErrorRate:   override.maxErrorRate   ?? MAX_ERROR_RATE,
+        rationale:      override.rationale,    // undefined when no override
+        decidedAt:      override.decidedAt,    // undefined when no override
     }
 }
 
