@@ -221,7 +221,7 @@ function attendanceTrend(first, last) {
  * list stays uniform; only the content column and the presence
  * of the action vary between the two.
  *
- * `action` (optional) shape: `{ label, onClick, disabled? }`.
+ * `action` (optional) shape: `{ label, onClick, disabled?, variant? }`.
  *   * Renders as a small button on the right side of the row.
  *   * Omitted entirely when null/undefined — no empty slot.
  *   * Click handling and any side-effects belong to the caller.
@@ -230,6 +230,13 @@ function attendanceTrend(first, last) {
  *     caller wires this true while a request is in-flight to
  *     prevent double-clicks and to swap the label to "Marking…"
  *     or similar.
+ *   * `variant` (optional 'default' | 'confirming') tweaks the
+ *     button styling without adding new components. The
+ *     'confirming' variant is the second-step affordance for the
+ *     two-click confirmation flow: amber border + bolder text +
+ *     pale-amber background, signalling "this click executes".
+ *     Disabled state still wins visually — a button that's both
+ *     confirming and disabled is impossible by design.
  *   * Designed as the foundation for "action from context" — a
  *     row can offer one obvious next step. Multi-action rows or
  *     menus are explicitly out of scope here; if that's ever
@@ -276,32 +283,48 @@ function TimelineRow({ icon, ariaLabel, isFirst, action, highlighted, children }
                 {icon}
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
-            {action && (
-                <button
-                    type="button"
-                    onClick={action.onClick}
-                    disabled={Boolean(action.disabled)}
-                    style={{
-                        flexShrink: 0,
-                        fontSize: 11.5,
-                        padding: '4px 10px',
-                        borderRadius: 4,
-                        border: '1px solid #d4d8de',
-                        background: '#fff',
-                        color: action.disabled ? '#7a8290' : '#3a4654',
-                        cursor: action.disabled ? 'wait' : 'pointer',
-                        whiteSpace: 'nowrap',
-                        // Centered against the multi-line content column
-                        // so the affordance reads as "row-level", not
-                        // "title-level". When singles eventually get
-                        // their own actions, the same vertical center
-                        // looks right against a 1- or 2-line row too.
-                        alignSelf: 'center',
-                    }}
-                >
-                    {action.label}
-                </button>
-            )}
+            {action && (() => {
+                // Style resolution: disabled wins, then confirming,
+                // then default. Keeping the cascade in one place
+                // means every button state is fully described by a
+                // single style object — no className gymnastics.
+                const isConfirming = action.variant === 'confirming' && !action.disabled
+                return (
+                    <button
+                        type="button"
+                        onClick={action.onClick}
+                        disabled={Boolean(action.disabled)}
+                        style={{
+                            flexShrink: 0,
+                            fontSize: 11.5,
+                            padding: '4px 10px',
+                            borderRadius: 4,
+                            border: isConfirming
+                                ? '1px solid #e1a648'
+                                : '1px solid #d4d8de',
+                            background: isConfirming
+                                ? '#fff7ec'
+                                : '#fff',
+                            color: action.disabled
+                                ? '#7a8290'
+                                : (isConfirming ? '#7a4f00' : '#3a4654'),
+                            fontWeight: isConfirming ? 500 : 400,
+                            cursor: action.disabled ? 'wait' : 'pointer',
+                            whiteSpace: 'nowrap',
+                            // Centered against the multi-line content
+                            // column so the affordance reads as "row-
+                            // level", not "title-level". When singles
+                            // eventually get their own actions, the
+                            // same vertical center looks right against
+                            // a 1- or 2-line row too.
+                            alignSelf: 'center',
+                            transition: 'background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out',
+                        }}
+                    >
+                        {action.label}
+                    </button>
+                )
+            })()}
         </div>
     )
 }
@@ -373,7 +396,10 @@ function renderSingle(e, i, isFirst, recentlyUpdatedKey) {
  *     the most recent operator action and the right anchor for
  *     "when did this last change".
  */
-function renderGroup(runDesc, i, isFirst, onMarkPresent, markingKey, recentlyUpdatedKey) {
+function renderGroup(
+    runDesc, i, isFirst,
+    onMarkPresent, markingKey, recentlyUpdatedKey, confirmingKey,
+) {
     const decor = TYPE_DECORATION.attendance
     const newest = runDesc[0]
     const chronological = [...runDesc].reverse()
@@ -424,24 +450,29 @@ function renderGroup(runDesc, i, isFirst, onMarkPresent, markingKey, recentlyUpd
     // `latestClassId` + `latestSessionDate` identify the session,
     // `studentId` is closure-bound at page level.
     //
-    // In-flight state: `markingKey` (the page-level "currently
-    // marking" sentinel) is compared against the run's anchor
-    // (`newest.ts`). When matched, the button renders disabled
-    // with a "Marking…" label so:
-    //   * concurrent clicks are blocked,
-    //   * the operator sees that something's happening,
-    //   * other rows stay interactive (only the row whose request
-    //     is in flight gets the loading state).
+    // Button state cascade (priority: marking > confirming > default):
+    //   * `markingKey === newest.ts`  → "Marking…" + disabled
+    //   * `confirmingKey === newest.ts` → "Confirm" + amber variant
+    //   * otherwise                    → "Mark present" + default
+    // Each state derives from the same row-anchor identity
+    // (`newest.ts`) so a rapid click sequence transitions through
+    // the cascade cleanly without any state thrash.
     const finalStatus = newest?.meta?.status
     const showMarkPresent =
         typeof onMarkPresent === 'function' &&
         finalStatus &&
         String(finalStatus).toLowerCase() !== 'present'
-    const isMarking = showMarkPresent && markingKey === newest.ts
+    const isMarking    = showMarkPresent && markingKey    === newest.ts
+    const isConfirming = showMarkPresent && !isMarking && confirmingKey === newest.ts
+    let label
+    if (isMarking)         label = 'Marking…'
+    else if (isConfirming) label = 'Confirm'
+    else                   label = 'Mark present'
     const action = showMarkPresent
         ? {
-            label: isMarking ? 'Marking…' : 'Mark present',
+            label,
             disabled: isMarking,
+            variant:  isConfirming ? 'confirming' : 'default',
             onClick: () => onMarkPresent({
                 runSize:           runDesc.length,
                 latestTs:          newest.ts,
@@ -500,6 +531,15 @@ export default function StudentTimelinePage() {
     // can use a single equality check against either.
     const [recentlyUpdatedKey, setRecentlyUpdatedKey] = useState(null)
 
+    // confirmingKey = the run anchor of the row currently in the
+    // "armed for confirmation" state. First click on Mark present
+    // sets this; second click within ~3s executes the mutation.
+    // No third state needed — once execution starts, `markingKey`
+    // takes over and `confirmingKey` clears. Same identity shape
+    // as the others, so the renderer's equality checks are
+    // uniform: marking > confirming > default.
+    const [confirmingKey, setConfirmingKey] = useState(null)
+
     // Auto-clear the highlight after a brief window. Using an effect
     // tied to the key means: if a second mark-present completes
     // before the previous fade finishes, the previous timer is
@@ -510,6 +550,17 @@ export default function StudentTimelinePage() {
         const t = setTimeout(() => setRecentlyUpdatedKey(null), 2500)
         return () => clearTimeout(t)
     }, [recentlyUpdatedKey])
+
+    // Auto-disarm confirmation if the operator doesn't follow
+    // through. Same effect shape as the highlight clear — cleanup
+    // cancels the previous timer if confirmation moves to a
+    // different row before the timeout, so the new row's window
+    // is full-length.
+    useEffect(() => {
+        if (!confirmingKey) return undefined
+        const t = setTimeout(() => setConfirmingKey(null), 3000)
+        return () => clearTimeout(t)
+    }, [confirmingKey])
 
     // Initial-page load.
     useEffect(() => {
@@ -560,6 +611,19 @@ export default function StudentTimelinePage() {
     // timeline so the just-marked row reflows through the same
     // grouping/state-summary path as a fresh load.
     //
+    // Two-click confirmation flow:
+    //   * First click on a row that isn't currently confirming →
+    //     arm confirmation (set confirmingKey, button label flips
+    //     to "Confirm"), and return without calling the RPC.
+    //   * Second click on the SAME row while it's still armed →
+    //     clear confirmingKey, set markingKey, fire the RPC.
+    //   * Click on a DIFFERENT row while another row is armed →
+    //     the new row arms; the old row's confirmation drops via
+    //     the equality check (only the row whose key matches
+    //     confirmingKey shows "Confirm").
+    //   * Auto-disarm timer (3s) reverts to "Mark present" if the
+    //     operator doesn't follow through.
+    //
     // Concurrency: a second click on the same (or any) row while
     // a request is in flight is a no-op. The disabled state on the
     // button is the primary block; the early-return is belt-and-
@@ -580,6 +644,17 @@ export default function StudentTimelinePage() {
             return
         }
         const key = context.latestTs
+        // First click on this row → arm confirmation, don't fire.
+        if (confirmingKey !== key) {
+            setConfirmingKey(key)
+            return
+        }
+        // Second click on the same row → clear confirmation and
+        // proceed. Clearing here (not in the .finally) means the
+        // button visually flips out of the "Confirm" state the
+        // moment the request starts; the disabled "Marking…"
+        // state takes over without a flash of "Mark present".
+        setConfirmingKey(null)
         setMarkingKey(key)
         try {
             await markAttendancePresent({
@@ -663,7 +738,7 @@ export default function StudentTimelinePage() {
                         if (item.kind === 'group') {
                             return renderGroup(
                                 item.events, i, isFirst,
-                                onMarkPresent, markingKey, recentlyUpdatedKey,
+                                onMarkPresent, markingKey, recentlyUpdatedKey, confirmingKey,
                             )
                         }
                         return renderSingle(item.event, i, isFirst, recentlyUpdatedKey)
