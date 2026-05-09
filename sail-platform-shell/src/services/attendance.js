@@ -126,6 +126,39 @@ export async function findAttendanceSessionForDate({ classId, sessionDate } = {}
 }
 
 /**
+ * Phase D — quick "mark present" affordance from the StudentTimeline
+ * grouped attendance row. Resolves the (class, session_date) pair to
+ * an attendance_session server-side and stamps the student's record
+ * 'present' with `recorded_by = auth.uid()` and `recorded_at = now()`.
+ *
+ * Idempotent in shape: re-calling for an already-present row just
+ * refreshes recorded_by / recorded_at. The UI suppresses the
+ * affordance when the latest status is already 'present', but the
+ * RPC defends against a stale-cache replay either way.
+ *
+ * Permission gate is the same as bridge_save_attendance_register
+ * (`is_staff_of_school OR has_permission('manage_attendance')`), so
+ * any operator who can save a register can also flip a single row
+ * to present from the timeline.
+ *
+ * @param {{ studentId: string, classId: string, sessionDate: string }} args
+ *   sessionDate is an ISO 'YYYY-MM-DD' string.
+ * @returns {Promise<{ attendance_record_id, attendance_session_id, class_id, student_user_id, session_date, status }>}
+ */
+export async function markAttendancePresent({ studentId, classId, sessionDate } = {}) {
+    if (!studentId)   throw new Error('studentId is required')
+    if (!classId)     throw new Error('classId is required')
+    if (!sessionDate) throw new Error('sessionDate is required')
+    const { data, error } = await supabase.rpc('bridge_mark_attendance_present', {
+        p_student_id:   studentId,
+        p_class_id:     classId,
+        p_session_date: sessionDate,
+    })
+    if (error) throw error
+    return data
+}
+
+/**
  * Phase B — recent sessions for a class with present/absent/late
  * counts pre-aggregated server-side. Powers the Recent Sessions panel
  * on the Helm Attendance page so the operator can jump back to a

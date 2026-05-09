@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { getStudentTimeline } from '../services/timeline'
+import { markAttendancePresent } from '../services/attendance'
 
 /**
  * /schools/:schoolId/students/:studentId/timeline — Phase D
@@ -220,11 +221,15 @@ function attendanceTrend(first, last) {
  * list stays uniform; only the content column and the presence
  * of the action vary between the two.
  *
- * `action` (optional) shape: `{ label: string, onClick: fn }`.
+ * `action` (optional) shape: `{ label, onClick, disabled? }`.
  *   * Renders as a small button on the right side of the row.
  *   * Omitted entirely when null/undefined — no empty slot.
  *   * Click handling and any side-effects belong to the caller.
  *     This component only handles presentation.
+ *   * `disabled` (optional bool) is honoured by the button — a
+ *     caller wires this true while a request is in-flight to
+ *     prevent double-clicks and to swap the label to "Marking…"
+ *     or similar.
  *   * Designed as the foundation for "action from context" — a
  *     row can offer one obvious next step. Multi-action rows or
  *     menus are explicitly out of scope here; if that's ever
@@ -260,6 +265,7 @@ function TimelineRow({ icon, ariaLabel, isFirst, action, children }) {
                 <button
                     type="button"
                     onClick={action.onClick}
+                    disabled={Boolean(action.disabled)}
                     style={{
                         flexShrink: 0,
                         fontSize: 11.5,
@@ -267,8 +273,8 @@ function TimelineRow({ icon, ariaLabel, isFirst, action, children }) {
                         borderRadius: 4,
                         border: '1px solid #d4d8de',
                         background: '#fff',
-                        color: '#3a4654',
-                        cursor: 'pointer',
+                        color: action.disabled ? '#7a8290' : '#3a4654',
+                        cursor: action.disabled ? 'wait' : 'pointer',
                         whiteSpace: 'nowrap',
                         // Centered against the multi-line content column
                         // so the affordance reads as "row-level", not
@@ -351,7 +357,7 @@ function renderSingle(e, i, isFirst) {
  *     the most recent operator action and the right anchor for
  *     "when did this last change".
  */
-function renderGroup(runDesc, i, isFirst, onMarkPresent) {
+function renderGroup(runDesc, i, isFirst, onMarkPresent, markingKey) {
     const decor = TYPE_DECORATION.attendance
     const newest = runDesc[0]
     const chronological = [...runDesc].reverse()
@@ -397,20 +403,29 @@ function renderGroup(runDesc, i, isFirst, onMarkPresent) {
     //   (a) the page passed a handler (no handler = no slot),
     //   (b) the current/final status isn't already 'present' (no
     //       point offering an action that's a no-op).
-    // Context payload is intentionally lean — just enough that a
-    // future real-action wiring can reconstruct the operation
-    // without re-querying. When the action is wired to a real
-    // RPC, the caller will use `latestClassId`/`latestSessionDate`
-    // to identify the session and `studentId` (closure-bound at
-    // page level) to scope the write.
+    // Context payload is intentionally lean — just enough that the
+    // RPC wrapper can scope the write without re-querying:
+    // `latestClassId` + `latestSessionDate` identify the session,
+    // `studentId` is closure-bound at page level.
+    //
+    // In-flight state: `markingKey` (the page-level "currently
+    // marking" sentinel) is compared against the run's anchor
+    // (`newest.ts`). When matched, the button renders disabled
+    // with a "Marking…" label so:
+    //   * concurrent clicks are blocked,
+    //   * the operator sees that something's happening,
+    //   * other rows stay interactive (only the row whose request
+    //     is in flight gets the loading state).
     const finalStatus = newest?.meta?.status
     const showMarkPresent =
         typeof onMarkPresent === 'function' &&
         finalStatus &&
         String(finalStatus).toLowerCase() !== 'present'
+    const isMarking = showMarkPresent && markingKey === newest.ts
     const action = showMarkPresent
         ? {
-            label: 'Mark present',
+            label: isMarking ? 'Marking…' : 'Mark present',
+            disabled: isMarking,
             onClick: () => onMarkPresent({
                 runSize:           runDesc.length,
                 latestTs:          newest.ts,
@@ -451,6 +466,13 @@ export default function StudentTimelinePage() {
     // page. A short page means we hit the bottom of the timeline; the
     // "Load more" button hides.
     const [hasMore,     setHasMore]     = useState(true)
+    // markingKey = the run anchor (newest event ts) of the grouped
+    // attendance row currently being mark-presented. Null when no
+    // request is in flight. Single string instead of a set because
+    // the action is per-row and we don't currently support
+    // overlapping concurrent marks across rows; the second click
+    // is no-op'd via the same key check.
+    const [markingKey,  setMarkingKey]  = useState(null)
 
     // Initial-page load.
     useEffect(() => {
@@ -496,25 +518,57 @@ export default function StudentTimelinePage() {
         }
     }
 
-    // Placeholder action handler — wired from grouped attendance
-    // rows via the row-level `action` slot. Logs only. The signature
-    // and call-site shape are intentionally what a future real
-    // implementation will need: studentId + schoolId from page
-    // closure, plus a row-derived `context` payload (latest class,
-    // latest session_date, etc.) that's enough to identify the
-    // session without a re-fetch.
+    // Action handler for grouped attendance rows — calls the
+    // bridge_mark_attendance_present RPC, then refetches the
+    // timeline so the just-marked row reflows through the same
+    // grouping/state-summary path as a fresh load.
     //
-    // When the real "mark present" RPC is wired, this is the one
-    // function that needs to change — every grouped row passes
-    // through it. No JSX, no row plumbing, no service-layer code
-    // gets touched here.
-    const onMarkPresent = (context) => {
-        // eslint-disable-next-line no-console
-        console.log('[Timeline] Mark present (placeholder — no backend wired yet)', {
-            studentId,
-            schoolId,
-            ...context,
-        })
+    // Concurrency: a second click on the same (or any) row while
+    // a request is in flight is a no-op. The disabled state on the
+    // button is the primary block; the early-return is belt-and-
+    // braces in case state hasn't propagated yet.
+    //
+    // Recovery: refetch is the source of truth — no optimistic
+    // update of `events`. The grouping logic, trend arrow, etc.
+    // all derive from `events`, and refetching avoids the trap of
+    // hand-editing one event in the middle of a sorted UNION.
+    const onMarkPresent = async (context) => {
+        if (markingKey) return                        // already marking another row
+        if (!context?.latestClassId || !context?.latestSessionDate) {
+            // Defensive — under normal flow the timeline always
+            // carries class_id + session_date for attendance events.
+            // Logging without throwing keeps the UI responsive.
+            // eslint-disable-next-line no-console
+            console.error('[Timeline] Mark present: missing class_id or session_date', context)
+            return
+        }
+        const key = context.latestTs
+        setMarkingKey(key)
+        try {
+            await markAttendancePresent({
+                studentId,
+                classId:     context.latestClassId,
+                sessionDate: context.latestSessionDate,
+            })
+            // Refetch (replace, reset cursor + hasMore). Same shape
+            // as initial load — the just-marked row will collapse
+            // into its same-day cluster and the trend arrow will
+            // re-derive automatically.
+            const rows = await getStudentTimeline({
+                schoolId, studentId, limit: PAGE_SIZE,
+            })
+            setEvents(rows)
+            setHasMore(rows.length >= PAGE_SIZE)
+        } catch (err) {
+            // No toast system yet — surface to console so dev/QA
+            // can see RLS/permission rejections, missing-session
+            // (P0002), etc. The button re-enables via the finally
+            // clause regardless.
+            // eslint-disable-next-line no-console
+            console.error('[Timeline] Mark present failed:', err)
+        } finally {
+            setMarkingKey(null)
+        }
     }
 
     return (
@@ -548,7 +602,7 @@ export default function StudentTimelinePage() {
                     {buildDisplayItems(events).map((item, i) => {
                         const isFirst = i === 0
                         if (item.kind === 'group') {
-                            return renderGroup(item.events, i, isFirst, onMarkPresent)
+                            return renderGroup(item.events, i, isFirst, onMarkPresent, markingKey)
                         }
                         return renderSingle(item.event, i, isFirst)
                     })}
