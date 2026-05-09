@@ -105,35 +105,61 @@ export function getActionMeta(action) {
  * see a problem before committing). When BOTH of those are
  * absent — high confirm rate, near-zero error rate, enough
  * volume to trust the signal — the confirm step is friction
- * without safety value, and the data is saying "this could go
- * single-click" the same way it did for assignment submission.
+ * without safety value.
+ *
+ * Pure over a slot. The caller decides whether to feed lifetime
+ * or recent data; this function doesn't care. The panel feeds
+ * `getRecentSlot(actionId)` so hints reflect *current* behaviour
+ * rather than session-long blended history; that switch is what
+ * lets fixes show up in the panel within seconds and stops old
+ * bad data poisoning new decisions.
  *
  * Thresholds:
- *   * confirm >= 5  — enough samples to trust the signal. Lower
- *                     and noise dominates; higher delays the hint
- *                     beyond what's useful for fast iteration.
+ *   * click >= MIN_HINT_CLICKS (5)  — volume guard at the funnel
+ *                     entry point. Recent windows can be tiny;
+ *                     this prevents single-click noise from
+ *                     firing the hint. Replaces the previous
+ *                     `confirm >= 5` gate, which was redundant
+ *                     under lifetime data (click >= confirm
+ *                     anyway) but suppressed legitimate recent
+ *                     hints that hadn't accumulated 5 confirms
+ *                     yet.
+ *   * confirm >= 1  — ratio safety. Without at least one confirm,
+ *                     `success / confirm` is NaN. Defensive
+ *                     against a corrupt slot where success > 0
+ *                     but confirm = 0 (which would otherwise
+ *                     make the ratio Infinity and pass the
+ *                     0.95 gate spuriously).
  *   * success / confirm >= 0.95 — near-certain follow-through
  *                     after confirming. If 1 in 20 fails after
  *                     confirm, the confirm IS catching something.
  *   * error === 0   — strict zero. A single error in this volume
  *                     is the difference between "confirm is
  *                     friction" and "confirm catches something".
- *                     Stricter than ratio-based because errors
- *                     are signal, not noise.
  *
  * The thresholds are deliberately simple integers/ratios — no
  * config, no tuning, no time decay. If they prove too strict or
- * too loose, change them in this one place. Easier to revisit
- * a hardcoded number than to argue about a config schema.
+ * too loose, change them in this one place.
  *
  * @param {{click,confirm,success,error}|null|undefined} slot
  * @returns {boolean}
  */
+const MIN_HINT_CLICKS = 5
+
 export function shouldHintConfirmRemoval(slot) {
     if (!slot) return false
-    if (slot.confirm < 5) return false
-    if (slot.error   > 0) return false
-    return (slot.success / slot.confirm) >= 0.95
+    // Defensive defaults: callers may pass partial fixtures (tests,
+    // experimental aggregator changes). Treat missing as zero so
+    // every gate checks a real number rather than silently passing
+    // an `undefined < 5` (false) comparison.
+    const click   = slot.click   ?? 0
+    const confirm = slot.confirm ?? 0
+    const success = slot.success ?? 0
+    const error   = slot.error   ?? 0
+    if (click   < MIN_HINT_CLICKS) return false
+    if (confirm < 1)               return false   // ratio safety
+    if (error   > 0)               return false
+    return (success / confirm) >= 0.95
 }
 
 // ── Self-verification ─────────────────────────────────────────────────────

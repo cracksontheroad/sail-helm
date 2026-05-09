@@ -63,50 +63,87 @@ test('getActionMeta — known action returns the frozen entry', () => {
 })
 
 // ── shouldHintConfirmRemoval ───────────────────────────────────────────────
-// Boundary tests around the three thresholds (confirm>=5, success/confirm>=0.95, error===0).
-// The ratio-vs-strict-zero distinction matters: errors are signal, not noise.
+// Boundary tests around the four gates: click>=5 (volume), confirm>=1 (ratio
+// safety), error===0 (strict), success/confirm>=0.95 (rate). All fixtures
+// now include explicit `click` values consistent with funnel monotonicity
+// (click >= confirm). The previous tests omitted click; that worked under
+// the old `confirm>=5` gate but underspecifies behaviour under the new
+// click-volume gate.
 
 test('hint — null/undefined slot → false (defensive)', () => {
     assert.equal(shouldHintConfirmRemoval(null),      false)
     assert.equal(shouldHintConfirmRemoval(undefined), false)
 })
 
-test('hint — confirm < 5 → false (insufficient sample)', () => {
-    assert.equal(shouldHintConfirmRemoval({ confirm: 4, success: 4, error: 0 }), false)
-    assert.equal(shouldHintConfirmRemoval({ confirm: 0, success: 0, error: 0 }), false)
+test('hint — click < MIN (5) → false (insufficient volume)', () => {
+    assert.equal(shouldHintConfirmRemoval({ click: 4, confirm: 4, success: 4, error: 0 }), false)
+    assert.equal(shouldHintConfirmRemoval({ click: 0, confirm: 0, success: 0, error: 0 }), false)
 })
 
-test('hint — boundary at confirm = 5 (exact threshold passes)', () => {
-    assert.equal(shouldHintConfirmRemoval({ confirm: 5, success: 5, error: 0 }), true)
+test('hint — click = MIN (5) with clean funnel → true (boundary passes)', () => {
+    assert.equal(shouldHintConfirmRemoval({ click: 5, confirm: 5, success: 5, error: 0 }), true)
+})
+
+test('hint — click = MIN-1 (4) is below threshold even with perfect rate', () => {
+    // Fast-feedback recent windows often start small. The 5-click
+    // gate prevents 1c-1f-1s flapping into a hint.
+    assert.equal(shouldHintConfirmRemoval({ click: 4, confirm: 4, success: 4, error: 0 }), false)
+})
+
+test('hint — confirm = 0 with click >= 5 → false (ratio safety)', () => {
+    // Defensive: a slot with click but no confirm is either a no-confirm
+    // action mid-flight or genuinely degenerate. Either way we can't
+    // compute a meaningful success/confirm ratio.
+    assert.equal(shouldHintConfirmRemoval({ click: 10, confirm: 0, success: 0, error: 0 }), false)
+})
+
+test('hint — confirm = 0 but success > 0 (corrupt) → false (Infinity ratio gated)', () => {
+    // success / confirm = Infinity, which would trivially pass >= 0.95.
+    // The confirm >= 1 gate blocks this corruption-driven false positive.
+    assert.equal(shouldHintConfirmRemoval({ click: 10, confirm: 0, success: 5, error: 0 }), false)
 })
 
 test('hint — error > 0 → false (errors are signal, not noise)', () => {
     // Even one error blocks the hint, regardless of how many successes precede it.
-    assert.equal(shouldHintConfirmRemoval({ confirm: 100, success: 99, error: 1 }), false)
-    assert.equal(shouldHintConfirmRemoval({ confirm: 5,   success: 5,  error: 1 }), false)
+    assert.equal(shouldHintConfirmRemoval({ click: 100, confirm: 100, success: 99, error: 1 }), false)
+    assert.equal(shouldHintConfirmRemoval({ click: 5,   confirm: 5,   success: 5,  error: 1 }), false)
 })
 
 test('hint — success/confirm < 0.95 → false (rate threshold)', () => {
     // 4/5 = 0.8 → no hint
-    assert.equal(shouldHintConfirmRemoval({ confirm: 5, success: 4, error: 0 }), false)
+    assert.equal(shouldHintConfirmRemoval({ click: 5, confirm: 5, success: 4, error: 0 }), false)
     // 18/20 = 0.9 → no hint
-    assert.equal(shouldHintConfirmRemoval({ confirm: 20, success: 18, error: 0 }), false)
+    assert.equal(shouldHintConfirmRemoval({ click: 20, confirm: 20, success: 18, error: 0 }), false)
 })
 
 test('hint — success/confirm >= 0.95 → true (with sufficient volume + zero errors)', () => {
     // 19/20 = 0.95 exact
-    assert.equal(shouldHintConfirmRemoval({ confirm: 20, success: 19, error: 0 }), true)
+    assert.equal(shouldHintConfirmRemoval({ click: 20, confirm: 20, success: 19, error: 0 }), true)
     // 100/100 = 1.0
-    assert.equal(shouldHintConfirmRemoval({ confirm: 100, success: 100, error: 0 }), true)
+    assert.equal(shouldHintConfirmRemoval({ click: 100, confirm: 100, success: 100, error: 0 }), true)
 })
 
-test('hint — typical "should hint" case (8 confirms, all succeed, no errors)', () => {
+test('hint — typical "should hint" case (10 clicks, 8 confirms, all succeed)', () => {
     assert.equal(shouldHintConfirmRemoval({ click: 10, confirm: 8, success: 8, error: 0 }), true)
 })
 
-test('hint — typical "should NOT hint" case (mid-confidence)', () => {
-    // 6 confirms, 5 succeed, 1 error → real failure mode, confirm is doing work
+test('hint — typical "should NOT hint" case (mid-confidence with one error)', () => {
+    // 10 clicks, 6 confirms, 5 succeed, 1 error → real failure mode, confirm doing work
     assert.equal(shouldHintConfirmRemoval({ click: 10, confirm: 6, success: 5, error: 1 }), false)
+})
+
+test('hint — recent-volume scenario (small but sufficient window)', () => {
+    // Realistic: recent 60s window has 5 clicks, all confirmed and successful.
+    // Under the OLD `confirm >= 5` gate this passed too; the new explicit
+    // `click >= 5` gate reads more honestly when the panel feeds recent data.
+    assert.equal(shouldHintConfirmRemoval({ click: 5, confirm: 5, success: 5, error: 0 }), true)
+})
+
+test('hint — recent-volume below threshold (panel will fall back to lifetime)', () => {
+    // 3 clicks recent → no hint. The PANEL handles the fallback to lifetime
+    // when recent.click === 0; this test only documents that the heuristic
+    // itself stays strict on small samples.
+    assert.equal(shouldHintConfirmRemoval({ click: 3, confirm: 3, success: 3, error: 0 }), false)
 })
 
 // ── validateSlot — funnel monotonicity invariants ──────────────────────────

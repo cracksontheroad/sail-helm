@@ -363,13 +363,6 @@ export default function TimelineDebugPanel() {
                         const countsTitle = requiresConfirm
                             ? 'click / confirm / success / error'
                             : 'click / success / error  (single-click action — no confirm step)'
-                        // Friction hint — only meaningful for actions
-                        // that currently HAVE a confirm step. The
-                        // heuristic itself is in timelineTelemetry.js
-                        // so it stays testable; this site just wires
-                        // the boolean to render.
-                        const hintRemoveConfirm =
-                            requiresConfirm && shouldHintConfirmRemoval(slot)
                         // Recent-window slot. Same shape as the
                         // lifetime slot but only counting events
                         // from the last RECENT_WINDOW_MS milliseconds.
@@ -384,6 +377,22 @@ export default function TimelineDebugPanel() {
                         const recentCounts = requiresConfirm
                             ? `${recent.click}c ${recent.confirm}f ${recent.success}s ${recent.error}e`
                             : `${recent.click}c ${recent.success}s ${recent.error}e`
+                        // Friction hint — only meaningful for actions
+                        // that currently HAVE a confirm step.
+                        //
+                        // Data source: prefer the recent slot so hints
+                        // reflect *current* behaviour. Fall back to
+                        // lifetime when recent.click === 0 so the hint
+                        // isn't blank on idle pages — but flag the
+                        // source in the label so the dev knows which
+                        // numbers drove the suggestion. (When recent
+                        // and lifetime contradict each other, the
+                        // label is what disambiguates.)
+                        const hintSourceIsRecent = recent.click > 0
+                        const hintSlot           = hintSourceIsRecent ? recent : slot
+                        const hintRemoveConfirm  = requiresConfirm
+                            && shouldHintConfirmRemoval(hintSlot)
+                        const hintSourceLabel = hintSourceIsRecent ? 'recent' : 'lifetime'
                         return (
                             <div key={key} style={{ marginBottom: 6 }}>
                                 <div style={{ color: '#e8edf3' }}>{label}</div>
@@ -429,9 +438,13 @@ export default function TimelineDebugPanel() {
                                 {hintRemoveConfirm && (
                                     <div
                                         title={
-                                            'Heuristic: confirm ≥ 5, success/confirm ≥ 95%, ' +
-                                            'error = 0. The confirm step looks like friction ' +
-                                            'without safety value at this point.'
+                                            `Heuristic over ${hintSourceLabel} slot: ` +
+                                            'click ≥ 5, success/confirm ≥ 95%, error = 0. ' +
+                                            'The confirm step looks like friction without ' +
+                                            'safety value at this point. ' +
+                                            (hintSourceIsRecent
+                                                ? '(Based on the last 60s of activity.)'
+                                                : '(Recent slot is empty; using lifetime.)')
                                         }
                                         style={{
                                             // Warm tone to differentiate from
@@ -442,7 +455,7 @@ export default function TimelineDebugPanel() {
                                             marginTop: 2,
                                         }}
                                     >
-                                        ⚡ consider removing confirm
+                                        ⚡ consider removing confirm ({hintSourceLabel})
                                     </div>
                                 )}
                                 {/* Integrity warning — fires whenever the
