@@ -259,14 +259,17 @@ function renderSingle(e, i, isFirst) {
  * Layout (intentionally one extra subtle line than singles, to
  * visually telegraph "this is a cluster, not a single event"):
  *   📋  Attendance (N updates)
- *       Marked {oldest_status}, then {next}, ..., then {newest}[ — class]
+ *       Now {final_status} (was {prev_status} [→ {prev_status} ...])[ — class]
  *       by {newest_actor} · {newest_ts}
  *
  * Edge cases:
- *   * Statuses are read in chronological order (oldest → newest)
- *     so the "story" reads naturally: "Marked late, then present"
- *     — i.e. "they were marked late, then later corrected to
- *     present", not the reverse.
+ *   * Status summary is state-oriented, not log-oriented: it
+ *     leads with the current/final status and demotes the change
+ *     path to a parenthetical. Matches the operator's question
+ *     ("what is the student now?") rather than narrating
+ *     bookkeeping. Previous statuses appear in chronological
+ *     order (oldest → most recent prior) so the history reads
+ *     left-to-right toward the current state.
  *   * Class context is appended only when uniform across the
  *     run; mixed classes (rare but possible across multiple
  *     periods in a day) drop the suffix to avoid implying one.
@@ -281,9 +284,21 @@ function renderGroup(runDesc, i, isFirst) {
     const statuses = chronological
         .map(ev => ev?.meta?.status)
         .filter(Boolean)
-    const statusLine = statuses.length > 0
-        ? statuses.map((s, idx) => idx === 0 ? `Marked ${s}` : s).join(', then ')
-        : null
+    // State-oriented summary: lead with the final (current) status,
+    // demote everything before it to a parenthetical change path.
+    // Joined with " → " so the history reads left-to-right toward
+    // the current state. Defensive fallback to a bare "Now {final}"
+    // if for some reason no previous statuses are recoverable —
+    // shouldn't happen under the length≥2 group-formation guard,
+    // but keeps the line non-empty either way.
+    let statusLine = null
+    if (statuses.length >= 1) {
+        const final = statuses[statuses.length - 1]
+        const previous = statuses.slice(0, -1)
+        statusLine = previous.length === 0
+            ? `Now ${final}`
+            : `Now ${final} (was ${previous.join(' → ')})`
+    }
     const classNames = new Set(
         runDesc.map(ev => ev?.meta?.class_name).filter(Boolean)
     )
