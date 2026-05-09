@@ -311,21 +311,70 @@ function formatDecidedAtTag(decidedAt) {
 }
 
 /**
+ * Name the FIRST failing condition that explains why the override
+ * isn't surfacing the hint. Lifts the drift warning from
+ * "something's wrong" to "this specific gate is failing" — turns
+ * a notification into a diagnosis.
+ *
+ * Priority order (per the policy spec, not the heuristic's
+ * short-circuit order):
+ *   1. success rate < minSuccessRate  → most product-meaningful
+ *   2. error rate   > maxErrorRate    → fallback
+ *
+ * In honest two-terminal funnels (success + error ≈ confirm),
+ * the two gates almost always co-fail because they're inverse
+ * sides of the same ratio. Reporting success first matches how
+ * an operator naturally thinks about reliability ("we're not
+ * getting enough wins") rather than the inverse ("we're getting
+ * too many losses").
+ */
+function describeDrift(slot, actionId) {
+    const eff     = getActionThresholds(actionId)
+    const confirm = slot?.confirm ?? 0
+    if (confirm < 1) {
+        // Edge case: clicks happened but no confirms were recorded.
+        // Neither rate is computable. Rare in practice (would mean
+        // every cycle stalled before confirm).
+        return 'no confirms recorded; cannot evaluate ratios'
+    }
+    const success = slot?.success ?? 0
+    const error   = slot?.error   ?? 0
+    const sucRate = success / confirm
+    const errRate = error   / confirm
+    if (sucRate < eff.minSuccessRate) {
+        return `below success threshold `
+            + `(${(sucRate * 100).toFixed(1)}% < ${(eff.minSuccessRate * 100).toFixed(1)}%)`
+    }
+    if (errRate > eff.maxErrorRate) {
+        return `above error threshold `
+            + `(${(errRate * 100).toFixed(1)}% > ${(eff.maxErrorRate * 100).toFixed(1)}%)`
+    }
+    // Unreachable when drift is true (the heuristic can only block
+    // at one of the gates above given click ≥ 5 + confirm ≥ 1).
+    // Defensive fallback in case the heuristic ever grows a new gate.
+    return 'gates pass individually; verify heuristic alignment'
+}
+
+/**
  * Detect behavioural drift on a per-action override: the override
  * exists *because* the action's data was expected to surface the
  * hint at the chosen thresholds. If that's no longer true — the
  * override is permissive enough but the data still fails the gates
  * — the policy may not match reality anymore.
  *
- * Returns `{ drifted: true }` only when:
+ * Returns `{ drifted: true, reason }` only when:
  *   1. An override is active for this action (rationale present),
  *   2. The slot has enough volume to evaluate (click ≥ MIN_HINT_CLICKS),
  *   3. The heuristic — under the override's thresholds — does NOT
  *      fire the hint.
  *
- * No rationale-text parsing, no threshold comparison, no mutation.
- * Just: "did the override do its job on this data?". When the answer
- * is no, surface a nudge to re-run the sweep.
+ * The `reason` field names the first failing gate (success or
+ * error rate) so the warning becomes a diagnosis, not just an
+ * alarm.
+ *
+ * No rationale-text parsing, no threshold comparison beyond the
+ * heuristic's own gates, no mutation. Just: "did the override do
+ * its job on this data, and if not, why?".
  *
  * What's deliberately NOT drift:
  *   * No override at all → nothing to drift from. Skip.
@@ -341,7 +390,8 @@ function detectDrift(slot, actionId) {
         return { drifted: false }                             // insufficient volume
     }
     const hint = shouldHintConfirmRemoval(slot, { actionId })
-    return { drifted: !hint }
+    if (hint) return { drifted: false }                       // override doing its job
+    return { drifted: true, reason: describeDrift(slot, actionId) }
 }
 
 function printDecisionSignal(label, signal, prevSignal = null) {
@@ -368,10 +418,10 @@ function printDecisionSignal(label, signal, prevSignal = null) {
     // and "data has shifted" is more actionable than "it's been a while").
     if (eff.rationale) {
         const { tag, stale } = formatDecidedAtTag(eff.decidedAt)
-        const { drifted }    = detectDrift(signal.recent, signal.actionId)
+        const { drifted, reason } = detectDrift(signal.recent, signal.actionId)
         console.log(`  rationale: ${eff.rationale}${tag}`)
         if (drifted) {
-            console.log(`  ⚠ behaviour drift: data no longer fits the override`)
+            console.log(`  ⚠ behaviour drift: ${reason}`)
         }
         if (drifted) {
             console.log(`  → re-run sweep to revalidate thresholds`)
@@ -509,10 +559,10 @@ function runSweep(name) {
     // validity, not just its age.
     if (eff.rationale) {
         const { tag, stale } = formatDecidedAtTag(eff.decidedAt)
-        const { drifted }    = detectDrift(slot, ATTENDANCE)
+        const { drifted, reason } = detectDrift(slot, ATTENDANCE)
         console.log(`  rationale: ${eff.rationale}${tag}`)
         if (drifted) {
-            console.log(`  ⚠ behaviour drift: data no longer fits the override`)
+            console.log(`  ⚠ behaviour drift: ${reason}`)
         }
         if (drifted) {
             console.log(`  → re-run sweep to revalidate thresholds`)
