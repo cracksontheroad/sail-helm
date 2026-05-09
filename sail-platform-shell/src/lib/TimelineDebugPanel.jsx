@@ -24,6 +24,7 @@ import {
     getActionMeta,
     shouldHintConfirmRemoval,
     validateSlot,
+    getRecentSlot,
 } from './timelineTelemetry'
 
 // Module-level constant. Vite replaces `process.env.NODE_ENV` with
@@ -51,6 +52,11 @@ const ACTION_LABELS = [
 // state. Tweak in source if the stress shape needs to change.
 const SPAM_CLICK_COUNT      = 8
 const SPAM_CLICK_INTERVAL_MS = 80
+
+// Sliding-window for the "recent" line in each row. Matches the
+// default in timelineTelemetry.js so the label stays honest if
+// either side ever changes.
+const RECENT_WINDOW_MS = 60_000
 
 const RECENT_ERROR_LIMIT = 5
 
@@ -300,6 +306,20 @@ export default function TimelineDebugPanel() {
                         // the boolean to render.
                         const hintRemoveConfirm =
                             requiresConfirm && shouldHintConfirmRemoval(slot)
+                        // Recent-window slot. Same shape as the
+                        // lifetime slot but only counting events
+                        // from the last RECENT_WINDOW_MS milliseconds.
+                        // Lifetime answers "what has happened since the
+                        // page loaded?"; recent answers "is this still
+                        // true right now?". Big divergence between the
+                        // two reveals trends the lifetime average
+                        // smooths over.
+                        const recent = getRecentSlot(key, RECENT_WINDOW_MS)
+                        const hasRecentActivity =
+                            recent.click + recent.confirm + recent.success + recent.error > 0
+                        const recentCounts = requiresConfirm
+                            ? `${recent.click}c ${recent.confirm}f ${recent.success}s ${recent.error}e`
+                            : `${recent.click}c ${recent.success}s ${recent.error}e`
                         return (
                             <div key={key} style={{ marginBottom: 6 }}>
                                 <div style={{ color: '#e8edf3' }}>{label}</div>
@@ -325,6 +345,21 @@ export default function TimelineDebugPanel() {
                                     <div style={{ opacity: 0.75 }}>
                                         avg {Math.round(slot.avgDurationMs)}ms
                                         {' · '}last {Math.round(slot.lastDurationMs)}ms
+                                    </div>
+                                )}
+                                {/* Sliding-window recent line. Hides
+                                    entirely when no recent activity —
+                                    keeps the row compact when only the
+                                    lifetime slot has data. The label
+                                    bakes in the window size so a viewer
+                                    knows what "recent" means without
+                                    hovering. */}
+                                {hasRecentActivity && (
+                                    <div
+                                        title={`Events in the last ${Math.round(RECENT_WINDOW_MS/1000)}s, aggregated. Compares with the lifetime line above to reveal trends.`}
+                                        style={{ opacity: 0.6 }}
+                                    >
+                                        recent {Math.round(RECENT_WINDOW_MS/1000)}s: {recentCounts}
                                     </div>
                                 )}
                                 {hintRemoveConfirm && (

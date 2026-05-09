@@ -231,12 +231,49 @@ function _ensureMetrics() {
             // Last-N error ring buffer for quick diagnostic. Bounded
             // so a steady-state failure doesn't grow memory unbounded.
             recentErrors: [],
+            // Per-action sliding window of timestamped events
+            // (`{phase, ts}`) used by `getRecentSlot`. Pruned on
+            // every write so memory stays bounded by the current
+            // window size, not session length.
+            recentEvents: Object.create(null),
         }
+    }
+    // Backwards-compat: pre-existing aggregates (from a session
+    // started before this slice landed) didn't have `recentEvents`.
+    // Add it lazily so the module never crashes on a stale shape.
+    if (!globalThis.__timelineMetrics.recentEvents) {
+        globalThis.__timelineMetrics.recentEvents = Object.create(null)
     }
     return globalThis.__timelineMetrics
 }
 
 const _RECENT_ERROR_CAPACITY = 25
+const _RECENT_WINDOW_MS      = 60_000   // 60s sliding window
+
+/**
+ * Append one timestamped event to the per-action window and prune
+ * entries older than `_RECENT_WINDOW_MS`. Pruning on write means
+ * memory is bounded by event rate × window size, not by session
+ * length. The list stays approximately sorted because we always
+ * push to the end with monotonic wall-clock time.
+ */
+function _pushRecentEvent(action, phase) {
+    const m = _ensureMetrics()
+    if (!m) return
+    if (!m.recentEvents[action]) m.recentEvents[action] = []
+    const list = m.recentEvents[action]
+    const now    = Date.now()
+    const cutoff = now - _RECENT_WINDOW_MS
+    list.push({ phase, ts: now })
+    // Prune old entries. The list is ordered (we only ever push
+    // to the end with monotonic time), so we can drop a contiguous
+    // prefix in one splice.
+    let pruneCount = 0
+    while (pruneCount < list.length && list[pruneCount].ts < cutoff) {
+        pruneCount++
+    }
+    if (pruneCount > 0) list.splice(0, pruneCount)
+}
 
 function _bumpAction(action, phase, durationMs, errorMessage) {
     const m = _ensureMetrics()
@@ -309,7 +346,41 @@ export function logTimelineAction(event) {
     if (!event.action || !event.phase) return
     const enriched = { ...event, ts: new Date().toISOString() }
     _bumpAction(event.action, event.phase, event.durationMs, event.error)
+    _pushRecentEvent(event.action, event.phase)
     _emit(enriched)
+}
+
+/**
+ * Compute a {click, confirm, success, error} slot from the last
+ * `windowMs` (default 60s) of timestamped events for one action.
+ *
+ * Filters fresh on every call — we don't trust prune-on-write to
+ * have run recently enough. Idle sessions could leave events that
+ * were valid at the last write but have aged out by now; this
+ * filter catches them.
+ *
+ * Returns the zero slot when no events match — never null. The
+ * panel can compare a recent slot against a lifetime slot without
+ * special-casing absence.
+ *
+ * @param {string} action
+ * @param {number=} windowMs
+ * @returns {{ click: number, confirm: number, success: number, error: number }}
+ */
+export function getRecentSlot(action, windowMs = _RECENT_WINDOW_MS) {
+    const slot = { click: 0, confirm: 0, success: 0, error: 0 }
+    const m = (typeof globalThis !== 'undefined' && globalThis.__timelineMetrics) || null
+    const list = m?.recentEvents?.[action]
+    if (!list || list.length === 0) return slot
+    const cutoff = Date.now() - windowMs
+    for (const e of list) {
+        if (e.ts < cutoff) continue
+        if      (e.phase === 'click')   slot.click++
+        else if (e.phase === 'confirm') slot.confirm++
+        else if (e.phase === 'success') slot.success++
+        else if (e.phase === 'error')   slot.error++
+    }
+    return slot
 }
 
 /**

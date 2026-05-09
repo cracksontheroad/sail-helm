@@ -14,6 +14,7 @@ import {
     getActionMeta,
     shouldHintConfirmRemoval,
     validateSlot,
+    getRecentSlot,
 } from './timelineTelemetry.js'
 
 // Silence console output during tests — the module logs via
@@ -239,6 +240,140 @@ test('validateSlot — meta missing defaults to requiresConfirm=true', () => {
     )
     assert.equal(r.valid, false)
     assert.ok(r.issues.some(s => s.includes('click') && s.includes('confirm')))
+})
+
+// ── getRecentSlot — sliding window aggregation ─────────────────────────────
+//
+// Time control via Date.now monkey-patch. Restored after each test (the
+// beforeEach hook resets metrics; we restore the function inline).
+
+const _origDateNow = Date.now
+function withMockedNow(seq, fn) {
+    let i = 0
+    Date.now = () => seq[Math.min(i++, seq.length - 1)]
+    try { fn() } finally { Date.now = _origDateNow }
+}
+
+test('getRecentSlot — empty metrics → zero slot', () => {
+    const slot = getRecentSlot(TIMELINE_ACTIONS.MARK_PRESENT)
+    assert.deepEqual(slot, { click: 0, confirm: 0, success: 0, error: 0 })
+})
+
+test('getRecentSlot — single event aggregates correctly', () => {
+    // Each call: logTimelineAction (writes), getRecentSlot (reads).
+    // Mock now() returns the same value for both so the event
+    // is in-window when read.
+    withMockedNow([100_000, 100_000], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    })
+    withMockedNow([100_010], () => {
+        const slot = getRecentSlot(TIMELINE_ACTIONS.MARK_PRESENT)
+        assert.equal(slot.click,   1)
+        assert.equal(slot.confirm, 0)
+        assert.equal(slot.success, 0)
+        assert.equal(slot.error,   0)
+    })
+})
+
+test('getRecentSlot — events older than window excluded', () => {
+    // Push event at t=0, read at t=70_000 (10s past the 60s window).
+    withMockedNow([0], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    })
+    withMockedNow([70_000], () => {
+        const slot = getRecentSlot(TIMELINE_ACTIONS.MARK_PRESENT)
+        assert.deepEqual(slot, { click: 0, confirm: 0, success: 0, error: 0 })
+    })
+})
+
+test('getRecentSlot — boundary at exactly 60s (still excluded)', () => {
+    // Event at t=0; read at t=60_000 → cutoff = 0 → e.ts (0) < cutoff (0) is false → INCLUDED.
+    // Event at t=0; read at t=60_001 → cutoff = 1 → e.ts (0) < cutoff (1) is true  → EXCLUDED.
+    withMockedNow([0], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    })
+    withMockedNow([60_000], () => {
+        // Exactly at window edge — included (cutoff is strict less-than).
+        assert.equal(getRecentSlot(TIMELINE_ACTIONS.MARK_PRESENT).click, 1)
+    })
+    withMockedNow([60_001], () => {
+        // 1ms past the edge — excluded.
+        assert.equal(getRecentSlot(TIMELINE_ACTIONS.MARK_PRESENT).click, 0)
+    })
+})
+
+test('getRecentSlot — aggregates multiple phases in window', () => {
+    withMockedNow([10_000], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    })
+    withMockedNow([10_100], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'confirm' })
+    })
+    withMockedNow([10_500], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'success', durationMs: 400 })
+    })
+    withMockedNow([10_500], () => {
+        const slot = getRecentSlot(TIMELINE_ACTIONS.MARK_PRESENT)
+        assert.equal(slot.click,   1)
+        assert.equal(slot.confirm, 1)
+        assert.equal(slot.success, 1)
+        assert.equal(slot.error,   0)
+    })
+})
+
+test('getRecentSlot — different actions tracked independently', () => {
+    withMockedNow([5000], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT,    phase: 'click' })
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_ASSIGNMENT, phase: 'click' })
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_ASSIGNMENT, phase: 'click' })
+    })
+    withMockedNow([5500], () => {
+        assert.equal(getRecentSlot(TIMELINE_ACTIONS.MARK_PRESENT).click,    1)
+        assert.equal(getRecentSlot(TIMELINE_ACTIONS.MARK_ASSIGNMENT).click, 2)
+    })
+})
+
+test('getRecentSlot — custom windowMs param honoured', () => {
+    withMockedNow([0], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    })
+    withMockedNow([5_000], () => {
+        // 5s window; event at t=0 read at t=5000 → at the edge but
+        // strict less-than means cutoff (5000-5000=0) ≤ ts (0), so included.
+        assert.equal(getRecentSlot(TIMELINE_ACTIONS.MARK_PRESENT, 5_000).click, 1)
+        // 1s window; same event is now 5s old → excluded.
+        assert.equal(getRecentSlot(TIMELINE_ACTIONS.MARK_PRESENT, 1_000).click, 0)
+    })
+})
+
+test('prune-on-write — old events drop from the in-memory log', () => {
+    withMockedNow([0], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    })
+    withMockedNow([100_000], () => {
+        // Write a new event 100s later. The first event was 100s
+        // ago — outside the 60s window — so the prune should drop it.
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    })
+    // Confirm via internals — only the recent (second) event remains.
+    const list = globalThis.__timelineMetrics.recentEvents[TIMELINE_ACTIONS.MARK_PRESENT]
+    assert.equal(list.length, 1)
+    assert.equal(list[0].ts, 100_000)
+})
+
+test('reset — clears recent events alongside aggregate', () => {
+    withMockedNow([0], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    })
+    assert.ok(globalThis.__timelineMetrics.recentEvents[TIMELINE_ACTIONS.MARK_PRESENT])
+    _resetTimelineMetrics()
+    assert.equal(globalThis.__timelineMetrics, undefined)
+    // After a fresh log, the recent events are starting from zero too.
+    withMockedNow([1000], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    })
+    const list = globalThis.__timelineMetrics.recentEvents[TIMELINE_ACTIONS.MARK_PRESENT]
+    assert.equal(list.length, 1)
 })
 
 test('logTimelineAction — initialises window.__timelineMetrics on first call', () => {
