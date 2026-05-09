@@ -54,6 +54,7 @@ import {
     TIMELINE_PHASES,
     MAX_ERROR_RATE,
     MIN_SUCCESS_RATE,
+    MIN_HINT_CLICKS,
     ACTION_THRESHOLDS,
     getActionThresholds,
 } from '../src/lib/timelineTelemetry.js'
@@ -309,6 +310,40 @@ function formatDecidedAtTag(decidedAt) {
     }
 }
 
+/**
+ * Detect behavioural drift on a per-action override: the override
+ * exists *because* the action's data was expected to surface the
+ * hint at the chosen thresholds. If that's no longer true — the
+ * override is permissive enough but the data still fails the gates
+ * — the policy may not match reality anymore.
+ *
+ * Returns `{ drifted: true }` only when:
+ *   1. An override is active for this action (rationale present),
+ *   2. The slot has enough volume to evaluate (click ≥ MIN_HINT_CLICKS),
+ *   3. The heuristic — under the override's thresholds — does NOT
+ *      fire the hint.
+ *
+ * No rationale-text parsing, no threshold comparison, no mutation.
+ * Just: "did the override do its job on this data?". When the answer
+ * is no, surface a nudge to re-run the sweep.
+ *
+ * What's deliberately NOT drift:
+ *   * No override at all → nothing to drift from. Skip.
+ *   * Insufficient volume (< 5 clicks) → not enough data to judge.
+ *     Skip rather than cry wolf on idle / test sessions.
+ *   * Hint firing under the override → policy is still doing its job.
+ *     Skip.
+ */
+function detectDrift(slot, actionId) {
+    const eff = getActionThresholds(actionId)
+    if (!eff.rationale) return { drifted: false }            // no override
+    if ((slot?.click ?? 0) < MIN_HINT_CLICKS) {
+        return { drifted: false }                             // insufficient volume
+    }
+    const hint = shouldHintConfirmRemoval(slot, { actionId })
+    return { drifted: !hint }
+}
+
 function printDecisionSignal(label, signal, prevSignal = null) {
     console.log(`\n=== DECISION SIGNAL — ${label} ===`)
     if (signal.empty) {
@@ -325,15 +360,22 @@ function printDecisionSignal(label, signal, prevSignal = null) {
     console.log(`  recent success rate: ${fmtRate(signal.successRate)} (${r.success}/${r.click})  [threshold ≥ ${(eff.minSuccessRate * 100).toFixed(1)}%${succTag}]`)
     console.log(`  recent error rate:   ${fmtRate(signal.errorRate)} (${r.error}/${r.click})  [threshold ≤ ${(eff.maxErrorRate * 100).toFixed(1)}%${errTag}]`)
     // Show the rationale + decided-at when this action runs under a
-    // per-action override. Single line, kept compact. Only fires when
-    // metadata is present, so non-overridden actions stay silent.
-    // Stale policies (older than STALE_AFTER_DAYS) get a one-line
-    // suggestion to re-run the sweep — the gentle nudge fires only
-    // when someone is already looking at the policy.
+    // per-action override. Two lifecycle signals can fire alongside:
+    //   * stale (time-based)  — older than STALE_AFTER_DAYS days
+    //   * drift (data-based)  — override no longer surfaces the hint
+    // Drift is the stronger signal so its suggestion supersedes the
+    // stale one when both fire (the dev only needs ONE nudge to act,
+    // and "data has shifted" is more actionable than "it's been a while").
     if (eff.rationale) {
         const { tag, stale } = formatDecidedAtTag(eff.decidedAt)
+        const { drifted }    = detectDrift(signal.recent, signal.actionId)
         console.log(`  rationale: ${eff.rationale}${tag}`)
-        if (stale) {
+        if (drifted) {
+            console.log(`  ⚠ behaviour drift: data no longer fits the override`)
+        }
+        if (drifted) {
+            console.log(`  → re-run sweep to revalidate thresholds`)
+        } else if (stale) {
             console.log(`  → consider re-running sweep to validate this policy`)
         }
     }
@@ -461,13 +503,20 @@ function runSweep(name) {
     console.log(`  effective policy: success ≥ ${(eff.minSuccessRate * 100).toFixed(1)}%,`
         + ` error ≤ ${(eff.maxErrorRate * 100).toFixed(1)}%${policyTag}`)
     // Surface the override's rationale + decided-at when present,
-    // including a relative-age tag and a stale marker if the policy
-    // is older than STALE_AFTER_DAYS. Auditable inline + nudges
-    // re-validation when the entry is aging.
+    // plus the two lifecycle signals: stale (time-based) and drift
+    // (data-based). Drift wins on the consolidated suggestion — it's
+    // the stronger signal because it speaks to the override's CURRENT
+    // validity, not just its age.
     if (eff.rationale) {
         const { tag, stale } = formatDecidedAtTag(eff.decidedAt)
+        const { drifted }    = detectDrift(slot, ATTENDANCE)
         console.log(`  rationale: ${eff.rationale}${tag}`)
-        if (stale) {
+        if (drifted) {
+            console.log(`  ⚠ behaviour drift: data no longer fits the override`)
+        }
+        if (drifted) {
+            console.log(`  → re-run sweep to revalidate thresholds`)
+        } else if (stale) {
             console.log(`  → consider re-running sweep to validate this policy`)
         }
     }
