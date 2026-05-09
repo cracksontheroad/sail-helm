@@ -378,11 +378,43 @@ function TimelineRow({ icon, ariaLabel, isFirst, action, highlighted, children }
     )
 }
 
+// ── Visual hierarchy primitives ──────────────────────────────────
+//
+// The timeline lives or dies on scan-ability. Every row carries a
+// primary signal (what happened) and 1–2 secondary lines (where,
+// when, by whom). Rendering those at the same weight defeats the
+// scan — operators end up reading instead of glancing.
+//
+// `RowTitle`     — primary event label. Type-color from
+//                  TYPE_DECORATION provides the accent (blue for
+//                  attendance, red for behaviour, etc.); weight 600
+//                  separates it from the surrounding muted body.
+// `SubtleLine`   — secondary metadata. Already muted via colour;
+//                  the additional 0.85 opacity nudges it further
+//                  down the visual hierarchy without introducing
+//                  a new colour token.
+//
+// Both are used by both row renderers (single + group), so the
+// hierarchy rules live in one place rather than scattered across
+// inline styles.
+
+function RowTitle({ color, children }) {
+    return (
+        <div style={{
+            fontWeight: 600,
+            color: color ?? '#3a4654',
+        }}>
+            {children}
+        </div>
+    )
+}
+
 function SubtleLine({ children }) {
     return (
         <div style={{
             fontSize: 11.5,
             color: '#7a8290',
+            opacity: 0.85,
             marginTop: 2,
             whiteSpace: 'pre-wrap',
         }}>
@@ -448,7 +480,7 @@ function renderSingle(e, i, isFirst, recentlyUpdatedKey, onAddBehaviourNote) {
             action={primaryAction}
             highlighted={recentlyUpdatedKey === e.ts}
         >
-            <div style={{ fontWeight: 500, color: decor.color }}>{e.title}</div>
+            <RowTitle color={decor.color}>{e.title}</RowTitle>
             {subline && <SubtleLine>{subline}</SubtleLine>}
         </TimelineRow>
     )
@@ -597,9 +629,9 @@ function renderGroup(
             action={primaryAction}
             highlighted={recentlyUpdatedKey === newest.ts}
         >
-            <div style={{ fontWeight: 500, color: decor.color }}>
+            <RowTitle color={decor.color}>
                 Attendance ({runDesc.length} updates)
-            </div>
+            </RowTitle>
             {contextLine && <SubtleLine>{contextLine}</SubtleLine>}
             {actorAndTs && <SubtleLine>{actorAndTs}</SubtleLine>}
         </TimelineRow>
