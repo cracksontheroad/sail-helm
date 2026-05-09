@@ -20,6 +20,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { useEffect, useState } from 'react'
+import { getActionMeta } from './timelineTelemetry'
 
 // Module-level constant. Vite replaces `process.env.NODE_ENV` with
 // the literal at build time → in a production bundle this becomes
@@ -120,32 +121,43 @@ export default function TimelineDebugPanel() {
                     {ACTION_LABELS.map(({ key, label }) => {
                         const slot = byAction[key]
                         if (!slot) return null
-                        // Funnel rates — both percent integers, both
-                        // null when their denominator is zero so the
-                        // panel never lies about no-data states.
-                        //   confirm rate = confirm / click
-                        //     → "did the user follow through after
-                        //        clicking the first time?"
-                        //   success rate = success / confirm
-                        //     → "did the RPC + refetch actually
-                        //        complete after the user committed?"
-                        // Together they decompose the loop:
-                        //   high confirm + low success  → system issue
-                        //   low confirm + high success  → UX hesitation
-                        //   both high                   → healthy
-                        const conv = slot.click   > 0
-                            ? Math.round((slot.confirm / slot.click)   * 100)
+                        // Branch the funnel display on the action's
+                        // policy. The metadata lives in the telemetry
+                        // module — same module that owns the
+                        // aggregate — so the *interpretation* of the
+                        // data lives next to the data, decoupled from
+                        // the *resolver* that decided the policy.
+                        //
+                        //   requiresConfirm = true (3-step funnel):
+                        //     click → confirm → success
+                        //     show: Nc Nf Ns Ne · X% confirm · Y% succ
+                        //     where Y = success / confirm.
+                        //
+                        //   requiresConfirm = false (2-step funnel):
+                        //     click → success
+                        //     show: Nc Ns Ne · Y% succ
+                        //     where Y = success / click. The confirm
+                        //     count + rate are dropped entirely —
+                        //     never part of this action's flow.
+                        const requiresConfirm = getActionMeta(key).requiresConfirm
+                        const conv = (requiresConfirm && slot.click > 0)
+                            ? Math.round((slot.confirm / slot.click) * 100)
                             : null
-                        const succ = slot.confirm > 0
-                            ? Math.round((slot.success / slot.confirm) * 100)
+                        const succDenom = requiresConfirm ? slot.confirm : slot.click
+                        const succ = succDenom > 0
+                            ? Math.round((slot.success / succDenom) * 100)
                             : null
+                        const countsLine = requiresConfirm
+                            ? `${slot.click}c ${slot.confirm}f ${slot.success}s ${slot.error}e`
+                            : `${slot.click}c ${slot.success}s ${slot.error}e`
+                        const countsTitle = requiresConfirm
+                            ? 'click / confirm / success / error'
+                            : 'click / success / error  (single-click action — no confirm step)'
                         return (
                             <div key={key} style={{ marginBottom: 6 }}>
                                 <div style={{ color: '#e8edf3' }}>{label}</div>
                                 <div>
-                                    <span title="click / confirm / success / error">
-                                        {slot.click}c {slot.confirm}f {slot.success}s {slot.error}e
-                                    </span>
+                                    <span title={countsTitle}>{countsLine}</span>
                                     {conv !== null && (
                                         <span style={{ marginLeft: 8, opacity: 0.75 }}>
                                             {conv}% confirm

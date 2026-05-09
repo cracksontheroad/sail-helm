@@ -45,6 +45,46 @@ export const TIMELINE_PHASES = Object.freeze({
 })
 
 /**
+ * Per-action metadata used by the *interpretation* layer (the
+ * debug panel, future dashboards). Mirrors the resolver's
+ * `requiresConfirm` policy but lives here, deliberately
+ * decoupled — the resolver owns *deciding the action*, this
+ * map owns *making sense of the resulting telemetry*.
+ *
+ * Why duplicate the policy across two modules?
+ *   * Each layer has its own concern and its own test suite.
+ *   * Coupling them would mean the panel imports from the
+ *     resolver, dragging React + handler-builder code into a
+ *     pure-data module, or extracting a third "policy" module
+ *     that both depend on. Both are heavier than two synced
+ *     constants.
+ *   * The contract that matters (truthful funnel display) is
+ *     enforced by tests on the panel logic, not by the
+ *     constants being literally the same object.
+ *
+ * If a future contributor adds a new action and forgets to
+ * update this map, the panel falls back to the conservative
+ * default (`requiresConfirm: true`) — funnel shows confirm
+ * step which is harmless if the action actually has one and
+ * mildly misleading if it doesn't. Acceptable failure mode.
+ */
+export const TIMELINE_ACTION_META = Object.freeze({
+    'attendance.mark_present':   Object.freeze({ requiresConfirm: true  }),
+    'behaviour.resolve':         Object.freeze({ requiresConfirm: true  }),
+    'assignment.mark_submitted': Object.freeze({ requiresConfirm: false }),
+})
+
+/**
+ * Safe lookup. Unknown actions get the conservative default
+ * (`requiresConfirm: true`) so the panel never under-displays
+ * the funnel for an action it doesn't recognise.
+ */
+export function getActionMeta(action) {
+    const m = TIMELINE_ACTION_META[action]
+    return m || { requiresConfirm: true }
+}
+
+/**
  * Lazily initialise the metrics aggregate on globalThis. Lazy so
  * the module import doesn't pollute the global scope until the
  * first action fires.

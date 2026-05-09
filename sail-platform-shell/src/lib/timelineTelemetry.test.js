@@ -10,6 +10,8 @@ import {
     _resetTimelineMetrics,
     TIMELINE_ACTIONS,
     TIMELINE_PHASES,
+    TIMELINE_ACTION_META,
+    getActionMeta,
 } from './timelineTelemetry.js'
 
 // Silence console output during tests — the module logs via
@@ -34,6 +36,26 @@ test('phase constants — closed enum of four phases', () => {
     assert.equal(TIMELINE_PHASES.CONFIRM, 'confirm')
     assert.equal(TIMELINE_PHASES.SUCCESS, 'success')
     assert.equal(TIMELINE_PHASES.ERROR,   'error')
+})
+
+test('action meta — encodes requiresConfirm per action', () => {
+    assert.equal(TIMELINE_ACTION_META[TIMELINE_ACTIONS.MARK_PRESENT].requiresConfirm,      true)
+    assert.equal(TIMELINE_ACTION_META[TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR].requiresConfirm, true)
+    assert.equal(TIMELINE_ACTION_META[TIMELINE_ACTIONS.MARK_ASSIGNMENT].requiresConfirm,   false)
+})
+
+test('action meta — frozen at top level (no mutation)', () => {
+    assert.throws(() => { TIMELINE_ACTION_META.foo = 'bar' })
+})
+
+test('getActionMeta — unknown action falls back to requiresConfirm=true (conservative)', () => {
+    const m = getActionMeta('nope.unknown')
+    assert.equal(m.requiresConfirm, true)
+})
+
+test('getActionMeta — known action returns the frozen entry', () => {
+    const m = getActionMeta(TIMELINE_ACTIONS.MARK_ASSIGNMENT)
+    assert.equal(m.requiresConfirm, false)
 })
 
 test('logTimelineAction — initialises window.__timelineMetrics on first call', () => {
