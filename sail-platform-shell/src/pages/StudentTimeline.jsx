@@ -82,14 +82,25 @@ function eventSubtext(event) {
     return null
 }
 
+// Page size — kept modest so first-page latency stays low. Operators
+// who want more click "Load more"; the cursor scheme below pages
+// monotonically backwards in time without overlap or duplicates.
+const PAGE_SIZE = 50
+
 export default function StudentTimelinePage() {
     const { schoolId, studentId } = useParams()
     const navigate = useNavigate()
 
-    const [events,  setEvents]  = useState([])
-    const [loading, setLoading] = useState(true)
-    const [error,   setError]   = useState(null)
+    const [events,      setEvents]      = useState([])
+    const [loading,     setLoading]     = useState(true)   // initial load
+    const [loadingMore, setLoadingMore] = useState(false)  // subsequent pages
+    const [error,       setError]       = useState(null)
+    // hasMore is set after each fetch: true iff the server returned a full
+    // page. A short page means we hit the bottom of the timeline; the
+    // "Load more" button hides.
+    const [hasMore,     setHasMore]     = useState(true)
 
+    // Initial-page load.
     useEffect(() => {
         let alive = true
         async function load() {
@@ -97,11 +108,14 @@ export default function StudentTimelinePage() {
             setLoading(true); setError(null)
             try {
                 const rows = await getStudentTimeline({
-                    schoolId, studentId, limit: 100,
+                    schoolId, studentId, limit: PAGE_SIZE,
                 })
-                if (alive) setEvents(rows)
+                if (alive) {
+                    setEvents(rows)
+                    setHasMore(rows.length >= PAGE_SIZE)
+                }
             } catch (err) {
-                if (alive) { setError(err); setEvents([]) }
+                if (alive) { setError(err); setEvents([]); setHasMore(false) }
             } finally {
                 if (alive) setLoading(false)
             }
@@ -109,6 +123,26 @@ export default function StudentTimelinePage() {
         load()
         return () => { alive = false }
     }, [schoolId, studentId])
+
+    // "Load more" — cursor = last visible event's ts. Strict "<" on the
+    // server side, so the same row never appears in two pages. Append
+    // results to the existing list (the page is monotonically older).
+    const loadMore = async () => {
+        if (loadingMore || loading || events.length === 0) return
+        setLoadingMore(true); setError(null)
+        try {
+            const lastTs = events[events.length - 1].ts
+            const rows = await getStudentTimeline({
+                schoolId, studentId, limit: PAGE_SIZE, beforeTs: lastTs,
+            })
+            setEvents((prev) => [...prev, ...rows])
+            setHasMore(rows.length >= PAGE_SIZE)
+        } catch (err) {
+            setError(err)
+        } finally {
+            setLoadingMore(false)
+        }
+    }
 
     return (
         <div style={{ padding: '20px 24px', maxWidth: 720, margin: '0 auto' }}>
@@ -192,6 +226,32 @@ export default function StudentTimelinePage() {
                             </div>
                         )
                     })}
+                </div>
+            )}
+
+            {/* Load more — visible only when:
+                - the initial page loaded successfully
+                - the most recent fetch returned a full page (so there
+                  may be more events older than the current bottom row).
+                Hides when we've drained the timeline. */}
+            {!loading && events.length > 0 && hasMore && (
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
+                    <button
+                        type="button"
+                        onClick={loadMore}
+                        disabled={loadingMore}
+                        style={{
+                            fontSize: 12.5,
+                            padding: '6px 14px',
+                            borderRadius: 4,
+                            border: '1px solid #d4d8de',
+                            background: '#fff',
+                            color: '#3a4654',
+                            cursor: loadingMore ? 'wait' : 'pointer',
+                        }}
+                    >
+                        {loadingMore ? 'Loading…' : 'Load more'}
+                    </button>
                 </div>
             )}
         </div>
