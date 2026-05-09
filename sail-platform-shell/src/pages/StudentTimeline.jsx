@@ -235,8 +235,17 @@ function attendanceTrend(first, last) {
  *     menus are explicitly out of scope here; if that's ever
  *     needed, replace `action` with `actions: []` and grow the
  *     slot, but defer until there's real demand.
+ *
+ * `highlighted` (optional bool) marks the row as "just changed
+ * by your action". When true, the row paints with a soft pale-
+ * green background; when subsequently flipped to false (after
+ * the page-level timeout clears `recentlyUpdatedKey`) the
+ * background transitions back to transparent over ~1.2s,
+ * producing a fade-out without any animation library. No
+ * fade-IN — the row appears already highlighted on mount,
+ * which is the desired "your change is right here" cue.
  */
-function TimelineRow({ icon, ariaLabel, isFirst, action, children }) {
+function TimelineRow({ icon, ariaLabel, isFirst, action, highlighted, children }) {
     return (
         <div
             style={{
@@ -246,6 +255,12 @@ function TimelineRow({ icon, ariaLabel, isFirst, action, children }) {
                 padding: '10px 14px',
                 borderTop: isFirst ? 'none' : '1px solid #e3e6eb',
                 fontSize: 13,
+                // Pale-green family — sits in the same accent space as
+                // the assignment_graded decoration but lighter so it
+                // doesn't compete with type icons. Transparent default
+                // means rows have no row-coloring otherwise.
+                backgroundColor: highlighted ? '#e6f5ea' : 'transparent',
+                transition: 'background-color 1.2s ease-out',
             }}
         >
             <span
@@ -304,7 +319,7 @@ function SubtleLine({ children }) {
     )
 }
 
-function renderSingle(e, i, isFirst) {
+function renderSingle(e, i, isFirst, recentlyUpdatedKey) {
     const decor = TYPE_DECORATION[e.type] || { icon: '·', color: '#5b6877' }
     const subline = [
         eventSubtext(e),
@@ -317,6 +332,7 @@ function renderSingle(e, i, isFirst) {
             icon={decor.icon}
             ariaLabel={e.type}
             isFirst={isFirst}
+            highlighted={recentlyUpdatedKey === e.ts}
         >
             <div style={{ fontWeight: 500, color: decor.color }}>{e.title}</div>
             {subline && <SubtleLine>{subline}</SubtleLine>}
@@ -357,7 +373,7 @@ function renderSingle(e, i, isFirst) {
  *     the most recent operator action and the right anchor for
  *     "when did this last change".
  */
-function renderGroup(runDesc, i, isFirst, onMarkPresent, markingKey) {
+function renderGroup(runDesc, i, isFirst, onMarkPresent, markingKey, recentlyUpdatedKey) {
     const decor = TYPE_DECORATION.attendance
     const newest = runDesc[0]
     const chronological = [...runDesc].reverse()
@@ -445,6 +461,7 @@ function renderGroup(runDesc, i, isFirst, onMarkPresent, markingKey) {
             ariaLabel="attendance"
             isFirst={isFirst}
             action={action}
+            highlighted={recentlyUpdatedKey === newest.ts}
         >
             <div style={{ fontWeight: 500, color: decor.color }}>
                 Attendance ({runDesc.length} updates)
@@ -473,6 +490,26 @@ export default function StudentTimelinePage() {
     // overlapping concurrent marks across rows; the second click
     // is no-op'd via the same key check.
     const [markingKey,  setMarkingKey]  = useState(null)
+    // recentlyUpdatedKey = the run anchor (newest event ts) of the
+    // row to highlight as "just changed by your action". Set after
+    // a successful mark-present + refetch by scanning the refetched
+    // events for the matching (class_id, session_date) attendance
+    // row and capturing its post-update ts (which is `now()` from
+    // the RPC). Cleared after a short timeout so the highlight
+    // fades away. Same shape as `markingKey` so the row renderers
+    // can use a single equality check against either.
+    const [recentlyUpdatedKey, setRecentlyUpdatedKey] = useState(null)
+
+    // Auto-clear the highlight after a brief window. Using an effect
+    // tied to the key means: if a second mark-present completes
+    // before the previous fade finishes, the previous timer is
+    // cleared via the cleanup and a new one starts — no overlap,
+    // no stale clears, no leaked timers on unmount.
+    useEffect(() => {
+        if (!recentlyUpdatedKey) return undefined
+        const t = setTimeout(() => setRecentlyUpdatedKey(null), 2500)
+        return () => clearTimeout(t)
+    }, [recentlyUpdatedKey])
 
     // Initial-page load.
     useEffect(() => {
@@ -559,6 +596,28 @@ export default function StudentTimelinePage() {
             })
             setEvents(rows)
             setHasMore(rows.length >= PAGE_SIZE)
+            // Visual confirmation — find the just-updated attendance
+            // event in the refetched list (matched on the action's
+            // (class_id, session_date) pair, with status='present')
+            // and stash its new ts as the highlight key. The grouping
+            // walker uses `newest.ts` as a group's identity, and a
+            // single non-grouped event uses its own ts, so the same
+            // key drives both render paths via the equality checks
+            // in renderSingle / renderGroup.
+            //
+            // We use the FIRST matching event because the post-RPC
+            // `recorded_at = now()` puts it at the top of any same-
+            // day cluster — equivalent to `runDesc[0]` for the run
+            // that newly contains it. If no match is found (RLS
+            // filter, pagination edge), the highlight is silently
+            // skipped — the action still landed.
+            const updated = (rows || []).find(r =>
+                r.type === 'attendance' &&
+                r.meta?.class_id     === context.latestClassId &&
+                r.meta?.session_date === context.latestSessionDate &&
+                String(r.meta?.status).toLowerCase() === 'present'
+            )
+            if (updated?.ts) setRecentlyUpdatedKey(updated.ts)
         } catch (err) {
             // No toast system yet — surface to console so dev/QA
             // can see RLS/permission rejections, missing-session
@@ -602,9 +661,12 @@ export default function StudentTimelinePage() {
                     {buildDisplayItems(events).map((item, i) => {
                         const isFirst = i === 0
                         if (item.kind === 'group') {
-                            return renderGroup(item.events, i, isFirst, onMarkPresent, markingKey)
+                            return renderGroup(
+                                item.events, i, isFirst,
+                                onMarkPresent, markingKey, recentlyUpdatedKey,
+                            )
                         }
-                        return renderSingle(item.event, i, isFirst)
+                        return renderSingle(item.event, i, isFirst, recentlyUpdatedKey)
                     })}
                 </div>
             )}
