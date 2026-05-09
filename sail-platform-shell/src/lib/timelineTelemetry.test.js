@@ -13,6 +13,7 @@ import {
     TIMELINE_ACTION_META,
     getActionMeta,
     shouldHintConfirmRemoval,
+    validateSlot,
 } from './timelineTelemetry.js'
 
 // Silence console output during tests — the module logs via
@@ -104,6 +105,140 @@ test('hint — typical "should hint" case (8 confirms, all succeed, no errors)',
 test('hint — typical "should NOT hint" case (mid-confidence)', () => {
     // 6 confirms, 5 succeed, 1 error → real failure mode, confirm is doing work
     assert.equal(shouldHintConfirmRemoval({ click: 10, confirm: 6, success: 5, error: 1 }), false)
+})
+
+// ── validateSlot — funnel monotonicity invariants ──────────────────────────
+
+const META_REQUIRES_CONFIRM = { requiresConfirm: true  }
+const META_NO_CONFIRM       = { requiresConfirm: false }
+
+const ZERO_COUNTS = {
+    click: 0, confirm: 0, success: 0, error: 0,
+    lastDurationMs: null, avgDurationMs: null,
+}
+
+test('validateSlot — null slot is valid (no data)', () => {
+    const r = validateSlot(null, META_REQUIRES_CONFIRM)
+    assert.equal(r.valid, true)
+    assert.deepEqual(r.issues, [])
+})
+
+test('validateSlot — happy path 3-step (click ≥ confirm ≥ success + error)', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 5, confirm: 4, success: 3, error: 1 },
+        META_REQUIRES_CONFIRM,
+    )
+    assert.equal(r.valid, true)
+})
+
+test('validateSlot — equal counts at each level pass (click=confirm=success)', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 3, confirm: 3, success: 3, error: 0 },
+        META_REQUIRES_CONFIRM,
+    )
+    assert.equal(r.valid, true)
+})
+
+test('validateSlot — click < confirm flagged (3-step)', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 2, confirm: 3, success: 0, error: 0 },
+        META_REQUIRES_CONFIRM,
+    )
+    assert.equal(r.valid, false)
+    assert.ok(r.issues.some(s => s.includes('click') && s.includes('confirm')))
+})
+
+test('validateSlot — confirm < success + error flagged (3-step)', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 5, confirm: 2, success: 2, error: 1 },
+        META_REQUIRES_CONFIRM,
+    )
+    assert.equal(r.valid, false)
+    assert.ok(r.issues.some(s => s.includes('confirm') && s.includes('success + error')))
+})
+
+test('validateSlot — happy path 2-step (click ≥ success + error)', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 5, confirm: 0, success: 4, error: 1 },
+        META_NO_CONFIRM,
+    )
+    assert.equal(r.valid, true)
+})
+
+test('validateSlot — 2-step click < success + error flagged', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 3, confirm: 0, success: 3, error: 1 },
+        META_NO_CONFIRM,
+    )
+    assert.equal(r.valid, false)
+    assert.ok(r.issues.some(s => s.includes('click') && s.includes('success + error')))
+})
+
+test('validateSlot — 2-step confirm > 0 is allowed (no false positive on policy drift)', () => {
+    // Mid-session policy change could leave a stale confirm; we don't flag it.
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 5, confirm: 2, success: 5, error: 0 },
+        META_NO_CONFIRM,
+    )
+    assert.equal(r.valid, true)
+})
+
+test('validateSlot — negative counts flagged', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: -1, confirm: 0, success: 0, error: 0 },
+        META_REQUIRES_CONFIRM,
+    )
+    assert.equal(r.valid, false)
+    assert.ok(r.issues.some(s => s.includes('click < 0')))
+})
+
+test('validateSlot — NaN duration flagged', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 1, confirm: 1, success: 1, error: 0,
+          lastDurationMs: NaN, avgDurationMs: 100 },
+        META_REQUIRES_CONFIRM,
+    )
+    assert.equal(r.valid, false)
+    assert.ok(r.issues.some(s => s.includes('lastDurationMs')))
+})
+
+test('validateSlot — Infinity duration flagged', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 1, confirm: 1, success: 1, error: 0,
+          lastDurationMs: 100, avgDurationMs: Infinity },
+        META_REQUIRES_CONFIRM,
+    )
+    assert.equal(r.valid, false)
+    assert.ok(r.issues.some(s => s.includes('avgDurationMs')))
+})
+
+test('validateSlot — null duration is allowed (not yet computed)', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 1, confirm: 1, success: 0, error: 0 },
+        META_REQUIRES_CONFIRM,
+    )
+    assert.equal(r.valid, true)
+})
+
+test('validateSlot — accumulates multiple issues', () => {
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: -1, confirm: 5, success: 10, error: 0,
+          lastDurationMs: NaN, avgDurationMs: -5 },
+        META_REQUIRES_CONFIRM,
+    )
+    assert.equal(r.valid, false)
+    // negative click + click<confirm + confirm<success+error + bad lastDur + bad avgDur
+    assert.ok(r.issues.length >= 4)
+})
+
+test('validateSlot — meta missing defaults to requiresConfirm=true', () => {
+    // Same behaviour as getActionMeta — conservative default.
+    const r = validateSlot(
+        { ...ZERO_COUNTS, click: 2, confirm: 3, success: 0, error: 0 },
+        null,
+    )
+    assert.equal(r.valid, false)
+    assert.ok(r.issues.some(s => s.includes('click') && s.includes('confirm')))
 })
 
 test('logTimelineAction — initialises window.__timelineMetrics on first call', () => {

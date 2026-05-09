@@ -20,7 +20,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { useEffect, useState } from 'react'
-import { getActionMeta, shouldHintConfirmRemoval } from './timelineTelemetry'
+import {
+    getActionMeta,
+    shouldHintConfirmRemoval,
+    validateSlot,
+} from './timelineTelemetry'
 
 // Module-level constant. Vite replaces `process.env.NODE_ENV` with
 // the literal at build time → in a production bundle this becomes
@@ -67,6 +71,19 @@ export default function TimelineDebugPanel() {
     const metrics = (typeof globalThis !== 'undefined' && globalThis.__timelineMetrics) || null
     const byAction = metrics?.byAction || {}
     const recentErrors = (metrics?.recentErrors || []).slice(-RECENT_ERROR_LIMIT)
+
+    // Validate every slot once per render. Per-row warnings + the
+    // global integrity indicator both read from this map. Slots
+    // with no data return { valid: true, issues: [] } — empty rows
+    // never trigger the indicator.
+    const validations = {}
+    for (const { key } of ACTION_LABELS) {
+        const slot = byAction[key]
+        if (slot) {
+            validations[key] = validateSlot(slot, getActionMeta(key))
+        }
+    }
+    const anyInvalid = Object.values(validations).some(v => !v.valid)
 
     const handleReset = () => {
         if (typeof globalThis !== 'undefined') {
@@ -159,7 +176,28 @@ export default function TimelineDebugPanel() {
                 color: '#e8edf3',
                 fontWeight: 600,
             }}>
-                <span>Timeline · debug</span>
+                <span>
+                    Timeline · debug
+                    {/* Integrity indicator. Tiny red glyph in the
+                        header lights up whenever ANY action's slot
+                        fails validation. Hovering shows a list of
+                        the actions involved so the dev can scroll
+                        to the offending row. */}
+                    {anyInvalid && (
+                        <span
+                            style={{ marginLeft: 6, color: '#ff8a8a' }}
+                            title={
+                                'Telemetry integrity issue — see ⚠ rows below.\n' +
+                                Object.entries(validations)
+                                    .filter(([, v]) => !v.valid)
+                                    .map(([k, v]) => `${k}: ${v.issues.join('; ')}`)
+                                    .join('\n')
+                            }
+                        >
+                            ⚠
+                        </span>
+                    )}
+                </span>
                 <button
                     type="button"
                     onClick={handleReset}
@@ -306,6 +344,25 @@ export default function TimelineDebugPanel() {
                                         }}
                                     >
                                         ⚡ consider removing confirm
+                                    </div>
+                                )}
+                                {/* Integrity warning — fires whenever the
+                                    slot fails any monotonicity invariant.
+                                    Distinct from the friction hint: red
+                                    tone, blunt label. The title attribute
+                                    enumerates the specific issues so the
+                                    dev can pinpoint the bug without
+                                    opening the source. */}
+                                {validations[key] && !validations[key].valid && (
+                                    <div
+                                        title={validations[key].issues.join('\n')}
+                                        style={{
+                                            color: '#ff8a8a',
+                                            opacity: 0.95,
+                                            marginTop: 2,
+                                        }}
+                                    >
+                                        ⚠ inconsistent telemetry
                                     </div>
                                 )}
                             </div>

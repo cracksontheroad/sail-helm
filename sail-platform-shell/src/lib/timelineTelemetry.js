@@ -136,6 +136,88 @@ export function shouldHintConfirmRemoval(slot) {
     return (slot.success / slot.confirm) >= 0.95
 }
 
+// ── Self-verification ─────────────────────────────────────────────────────
+//
+// Funnel-monotonicity invariants. The action loop's correctness rests on
+// these holding under all conditions — spam, races, failures — so we
+// surface violations live in the panel instead of waiting to discover them
+// in production data weeks later.
+//
+// Invariants for `requiresConfirm: true` actions (3-step funnel):
+//   * click   ≥ confirm                  — can't confirm without clicking
+//   * confirm ≥ success + error          — every terminal came from a confirm
+//
+// Invariants for `requiresConfirm: false` actions (2-step funnel):
+//   * click ≥ success + error            — every terminal came from a click
+//
+// Universal invariants:
+//   * all four counts are non-negative integers
+//   * lastDurationMs / avgDurationMs are non-negative finite (no NaN, no
+//     Infinity) when set
+//
+// What this won't catch:
+//   * Off-by-one shifts where (click=2, confirm=2, success=2) is internally
+//     consistent but every cycle is double-fired. The funnel doesn't expose
+//     a check for "ratio looks suspicious" — only "structure is broken".
+//   * Cross-action contamination (e.g. attendance click bumping behaviour
+//     counters). Each action is validated independently.
+// Both are out of scope for this layer; ratio-based heuristics live in
+// `shouldHint*` functions.
+
+/**
+ * Validate one action's metric slot against its policy.
+ *
+ * @param {object|null|undefined} slot — { click, confirm, success, error,
+ *                                          lastDurationMs, avgDurationMs }
+ * @param {object|null|undefined} meta — { requiresConfirm } (or null/undefined)
+ * @returns {{ valid: boolean, issues: string[] }}
+ */
+export function validateSlot(slot, meta) {
+    if (!slot) return { valid: true, issues: [] }   // no data is always valid
+    const issues = []
+
+    // Non-negative counts. If any of these fire, the aggregator has
+    // a serious bug — counters are only ever `++`-ed.
+    if (slot.click   < 0) issues.push(`click < 0 (${slot.click})`)
+    if (slot.confirm < 0) issues.push(`confirm < 0 (${slot.confirm})`)
+    if (slot.success < 0) issues.push(`success < 0 (${slot.success})`)
+    if (slot.error   < 0) issues.push(`error < 0 (${slot.error})`)
+
+    const requiresConfirm = !meta || meta.requiresConfirm !== false
+    const terminals = (slot.success ?? 0) + (slot.error ?? 0)
+
+    if (requiresConfirm) {
+        if (slot.click < slot.confirm) {
+            issues.push(`click (${slot.click}) < confirm (${slot.confirm})`)
+        }
+        if (slot.confirm < terminals) {
+            issues.push(`confirm (${slot.confirm}) < success + error (${terminals})`)
+        }
+    } else {
+        // 2-step funnel. We deliberately do NOT flag confirm > 0 here
+        // because a developer toggling the policy mid-session could leave
+        // a transient confirm count from before the change. Flagging it
+        // would produce false positives. If you want to catch policy
+        // drift, do it via a separate ratio-based hint.
+        if (slot.click < terminals) {
+            issues.push(`click (${slot.click}) < success + error (${terminals})`)
+        }
+    }
+
+    // Duration sanity. NaN and Infinity creep in if a bug ever divides by
+    // zero or carries a non-numeric value through the avg computation.
+    for (const k of ['lastDurationMs', 'avgDurationMs']) {
+        const v = slot[k]
+        if (v !== null && v !== undefined) {
+            if (!Number.isFinite(v) || v < 0) {
+                issues.push(`${k} is not a finite non-negative number (${v})`)
+            }
+        }
+    }
+
+    return { valid: issues.length === 0, issues }
+}
+
 /**
  * Lazily initialise the metrics aggregate on globalThis. Lazy so
  * the module import doesn't pollute the global scope until the
