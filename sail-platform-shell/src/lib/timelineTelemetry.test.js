@@ -12,6 +12,7 @@ import {
     TIMELINE_PHASES,
     TIMELINE_ACTION_META,
     getActionMeta,
+    shouldHintConfirmRemoval,
 } from './timelineTelemetry.js'
 
 // Silence console output during tests — the module logs via
@@ -56,6 +57,53 @@ test('getActionMeta — unknown action falls back to requiresConfirm=true (conse
 test('getActionMeta — known action returns the frozen entry', () => {
     const m = getActionMeta(TIMELINE_ACTIONS.MARK_ASSIGNMENT)
     assert.equal(m.requiresConfirm, false)
+})
+
+// ── shouldHintConfirmRemoval ───────────────────────────────────────────────
+// Boundary tests around the three thresholds (confirm>=5, success/confirm>=0.95, error===0).
+// The ratio-vs-strict-zero distinction matters: errors are signal, not noise.
+
+test('hint — null/undefined slot → false (defensive)', () => {
+    assert.equal(shouldHintConfirmRemoval(null),      false)
+    assert.equal(shouldHintConfirmRemoval(undefined), false)
+})
+
+test('hint — confirm < 5 → false (insufficient sample)', () => {
+    assert.equal(shouldHintConfirmRemoval({ confirm: 4, success: 4, error: 0 }), false)
+    assert.equal(shouldHintConfirmRemoval({ confirm: 0, success: 0, error: 0 }), false)
+})
+
+test('hint — boundary at confirm = 5 (exact threshold passes)', () => {
+    assert.equal(shouldHintConfirmRemoval({ confirm: 5, success: 5, error: 0 }), true)
+})
+
+test('hint — error > 0 → false (errors are signal, not noise)', () => {
+    // Even one error blocks the hint, regardless of how many successes precede it.
+    assert.equal(shouldHintConfirmRemoval({ confirm: 100, success: 99, error: 1 }), false)
+    assert.equal(shouldHintConfirmRemoval({ confirm: 5,   success: 5,  error: 1 }), false)
+})
+
+test('hint — success/confirm < 0.95 → false (rate threshold)', () => {
+    // 4/5 = 0.8 → no hint
+    assert.equal(shouldHintConfirmRemoval({ confirm: 5, success: 4, error: 0 }), false)
+    // 18/20 = 0.9 → no hint
+    assert.equal(shouldHintConfirmRemoval({ confirm: 20, success: 18, error: 0 }), false)
+})
+
+test('hint — success/confirm >= 0.95 → true (with sufficient volume + zero errors)', () => {
+    // 19/20 = 0.95 exact
+    assert.equal(shouldHintConfirmRemoval({ confirm: 20, success: 19, error: 0 }), true)
+    // 100/100 = 1.0
+    assert.equal(shouldHintConfirmRemoval({ confirm: 100, success: 100, error: 0 }), true)
+})
+
+test('hint — typical "should hint" case (8 confirms, all succeed, no errors)', () => {
+    assert.equal(shouldHintConfirmRemoval({ click: 10, confirm: 8, success: 8, error: 0 }), true)
+})
+
+test('hint — typical "should NOT hint" case (mid-confidence)', () => {
+    // 6 confirms, 5 succeed, 1 error → real failure mode, confirm is doing work
+    assert.equal(shouldHintConfirmRemoval({ click: 10, confirm: 6, success: 5, error: 1 }), false)
 })
 
 test('logTimelineAction — initialises window.__timelineMetrics on first call', () => {

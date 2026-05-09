@@ -84,6 +84,58 @@ export function getActionMeta(action) {
     return m || { requiresConfirm: true }
 }
 
+// ── Friction hints ────────────────────────────────────────────────────────
+//
+// Heuristics that read the metrics aggregate and surface
+// suggestions about the action loop's *policy*, not its data.
+// Advisory only — they never mutate state and never enforce
+// behaviour. The panel renders the hint; the developer decides
+// whether to act on it.
+//
+// Naming convention for future hints: `shouldHint<X>(slot)` →
+// boolean. One function per heuristic. Each is independently
+// testable. New hints accumulate here; the panel branches on
+// each.
+
+/**
+ * "Consider removing confirm" — flags actions whose confirm step
+ * is no longer pulling its weight. A confirm is justified when
+ * users either hesitate at it (giving them a chance to back out)
+ * OR when the action sometimes fails (giving them a chance to
+ * see a problem before committing). When BOTH of those are
+ * absent — high confirm rate, near-zero error rate, enough
+ * volume to trust the signal — the confirm step is friction
+ * without safety value, and the data is saying "this could go
+ * single-click" the same way it did for assignment submission.
+ *
+ * Thresholds:
+ *   * confirm >= 5  — enough samples to trust the signal. Lower
+ *                     and noise dominates; higher delays the hint
+ *                     beyond what's useful for fast iteration.
+ *   * success / confirm >= 0.95 — near-certain follow-through
+ *                     after confirming. If 1 in 20 fails after
+ *                     confirm, the confirm IS catching something.
+ *   * error === 0   — strict zero. A single error in this volume
+ *                     is the difference between "confirm is
+ *                     friction" and "confirm catches something".
+ *                     Stricter than ratio-based because errors
+ *                     are signal, not noise.
+ *
+ * The thresholds are deliberately simple integers/ratios — no
+ * config, no tuning, no time decay. If they prove too strict or
+ * too loose, change them in this one place. Easier to revisit
+ * a hardcoded number than to argue about a config schema.
+ *
+ * @param {{click,confirm,success,error}|null|undefined} slot
+ * @returns {boolean}
+ */
+export function shouldHintConfirmRemoval(slot) {
+    if (!slot) return false
+    if (slot.confirm < 5) return false
+    if (slot.error   > 0) return false
+    return (slot.success / slot.confirm) >= 0.95
+}
+
 /**
  * Lazily initialise the metrics aggregate on globalThis. Lazy so
  * the module import doesn't pollute the global scope until the

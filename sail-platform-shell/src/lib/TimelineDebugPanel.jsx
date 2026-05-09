@@ -20,7 +20,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { useEffect, useState } from 'react'
-import { getActionMeta } from './timelineTelemetry'
+import { getActionMeta, shouldHintConfirmRemoval } from './timelineTelemetry'
 
 // Module-level constant. Vite replaces `process.env.NODE_ENV` with
 // the literal at build time → in a production bundle this becomes
@@ -153,6 +153,13 @@ export default function TimelineDebugPanel() {
                         const countsTitle = requiresConfirm
                             ? 'click / confirm / success / error'
                             : 'click / success / error  (single-click action — no confirm step)'
+                        // Friction hint — only meaningful for actions
+                        // that currently HAVE a confirm step. The
+                        // heuristic itself is in timelineTelemetry.js
+                        // so it stays testable; this site just wires
+                        // the boolean to render.
+                        const hintRemoveConfirm =
+                            requiresConfirm && shouldHintConfirmRemoval(slot)
                         return (
                             <div key={key} style={{ marginBottom: 6 }}>
                                 <div style={{ color: '#e8edf3' }}>{label}</div>
@@ -178,6 +185,25 @@ export default function TimelineDebugPanel() {
                                     <div style={{ opacity: 0.75 }}>
                                         avg {Math.round(slot.avgDurationMs)}ms
                                         {' · '}last {Math.round(slot.lastDurationMs)}ms
+                                    </div>
+                                )}
+                                {hintRemoveConfirm && (
+                                    <div
+                                        title={
+                                            'Heuristic: confirm ≥ 5, success/confirm ≥ 95%, ' +
+                                            'error = 0. The confirm step looks like friction ' +
+                                            'without safety value at this point.'
+                                        }
+                                        style={{
+                                            // Warm tone to differentiate from
+                                            // the neutral metric rows. Not a
+                                            // warning — this is advisory.
+                                            color: '#ffd28a',
+                                            opacity: 0.85,
+                                            marginTop: 2,
+                                        }}
+                                    >
+                                        ⚡ consider removing confirm
                                     </div>
                                 )}
                             </div>
