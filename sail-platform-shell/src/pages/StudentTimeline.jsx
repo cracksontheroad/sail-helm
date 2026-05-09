@@ -14,7 +14,17 @@ import { getStudentTimeline } from '../services/timeline'
  *
  * Each row carries `{type, ts, title, meta}`. Titles are
  * human-readable and generated server-side — the UI renders them
- * verbatim with a per-type icon + optional subtext from meta.
+ * verbatim with a per-type icon + a single subtle secondary line
+ * combining contextual subtext, actor attribution, and timestamp.
+ *
+ * Actor enrichment (Phase D actor pass):
+ *   * `meta.actor_name` is the resolved full name (or email fallback)
+ *     of the user who recorded each event. Null when the source row
+ *     has no recorded actor (e.g. legacy assignments with
+ *     `created_by IS NULL`, or `assignment_graded` which has no
+ *     `ai_graded_by` column). The UI omits the "by …" prefix in
+ *     that case rather than block the row — matches the planner
+ *     directive: leave actor null where missing.
  *
  * Strict scope (Timeline v1 contract):
  *   * No filters, pagination beyond a single limit, editing,
@@ -173,7 +183,17 @@ export default function StudentTimelinePage() {
                 <div style={{ border: '1px solid #e3e6eb', borderRadius: 6 }}>
                     {events.map((e, i) => {
                         const decor = TYPE_DECORATION[e.type] || { icon: '·', color: '#5b6877' }
-                        const sub = eventSubtext(e)
+                        // Single subtle subline beneath the title: existing
+                        // contextual subtext + actor attribution + timestamp,
+                        // joined by " · ". `actor_name` is omitted entirely
+                        // when null (legacy/missing data) so the prefix
+                        // never reads "by — " as a placeholder.
+                        const subParts = [
+                            eventSubtext(e),
+                            e.meta?.actor_name ? `by ${e.meta.actor_name}` : null,
+                            formatTimestamp(e.ts),
+                        ].filter(Boolean)
+                        const subline = subParts.join(' · ')
                         return (
                             <div
                                 key={`${e.type}-${e.ts}-${i}`}
@@ -202,24 +222,16 @@ export default function StudentTimelinePage() {
                                     <div style={{ fontWeight: 500, color: decor.color }}>
                                         {e.title}
                                     </div>
-                                    {sub && (
+                                    {subline && (
                                         <div style={{
                                             fontSize: 11.5,
-                                            color: '#5b6877',
+                                            color: '#7a8290',
                                             marginTop: 2,
                                             whiteSpace: 'pre-wrap',
                                         }}>
-                                            {sub}
+                                            {subline}
                                         </div>
                                     )}
-                                </div>
-                                <div style={{
-                                    fontSize: 11.5,
-                                    color: '#7a8290',
-                                    flexShrink: 0,
-                                    whiteSpace: 'nowrap',
-                                }}>
-                                    {formatTimestamp(e.ts)}
                                 </div>
                             </div>
                         )
