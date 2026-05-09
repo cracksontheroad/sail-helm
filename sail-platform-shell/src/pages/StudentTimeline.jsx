@@ -10,6 +10,7 @@ import {
     TIMELINE_ACTIONS,
     TIMELINE_PHASES,
 } from '../lib/timelineTelemetry'
+import TimelineDebugPanel from '../lib/TimelineDebugPanel'
 
 /**
  * /schools/:schoolId/students/:studentId/timeline — Phase D
@@ -1156,6 +1157,10 @@ export default function StudentTimelinePage() {
                     </button>
                 </div>
             )}
+
+            {/* Dev-only telemetry overlay. Returns null in production
+                builds via the IS_DEV gate inside the component. */}
+            <TimelineDebugPanel />
         </div>
     )
 }
