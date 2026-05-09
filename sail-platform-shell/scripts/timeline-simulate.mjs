@@ -54,6 +54,8 @@ import {
     TIMELINE_PHASES,
     MAX_ERROR_RATE,
     MIN_SUCCESS_RATE,
+    ACTION_THRESHOLDS,
+    getActionThresholds,
 } from '../src/lib/timelineTelemetry.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -211,10 +213,18 @@ function computeDecisionSignal(snap, action) {
     const validation  = validateRowSlots(lifetime, recent, meta)
     // Panel logic: prefer recent if there's data, else fall back to lifetime.
     const slotForHint = recent.click > 0 ? recent : lifetime
-    const hintFires   = shouldHintConfirmRemoval(slotForHint)
+    // Pass actionId so the heuristic picks up any per-action threshold
+    // override (e.g. attendance.mark_present uses 90%/10%).
+    const hintFires   = shouldHintConfirmRemoval(slotForHint, { actionId: action })
     const total       = recent.click
     const successRate = total > 0 ? recent.success / total : null
     const errorRate   = total > 0 ? recent.error   / total : null
+
+    // Effective thresholds for THIS action — global defaults unless
+    // ACTION_THRESHOLDS has an override. Used by the recommendation
+    // text + the displayed thresholds so the dev sees the policy the
+    // heuristic actually applied (not the global defaults).
+    const eff = getActionThresholds(action)
 
     // Recommendation reason — picks the FIRST gate that blocks the
     // hint, mirroring the order in `shouldHintConfirmRemoval`. Keeps
@@ -227,10 +237,10 @@ function computeDecisionSignal(snap, action) {
         recommendation = 'INSUFFICIENT DATA'
     } else if (hintFires) {
         recommendation = 'REMOVE CONFIRM (heuristic fires; click-confirm friction without safety value)'
-    } else if (errRate > MAX_ERROR_RATE) {
-        recommendation = `KEEP CONFIRM (error rate ${(errRate * 100).toFixed(1)}% above ${(MAX_ERROR_RATE * 100).toFixed(1)}% threshold)`
-    } else if (recent.confirm > 0 && sucRate < 0.95) {
-        recommendation = `KEEP CONFIRM (success rate ${(sucRate * 100).toFixed(1)}% below 95% threshold)`
+    } else if (errRate > eff.maxErrorRate) {
+        recommendation = `KEEP CONFIRM (error rate ${(errRate * 100).toFixed(1)}% above ${(eff.maxErrorRate * 100).toFixed(1)}% threshold)`
+    } else if (recent.confirm > 0 && sucRate < eff.minSuccessRate) {
+        recommendation = `KEEP CONFIRM (success rate ${(sucRate * 100).toFixed(1)}% below ${(eff.minSuccessRate * 100).toFixed(1)}% threshold)`
     } else {
         recommendation = 'KEEP CONFIRM (heuristic silent; reason unclear — inspect manually)'
     }
@@ -241,6 +251,8 @@ function computeDecisionSignal(snap, action) {
         validation,
         successRate, errorRate, total,
         hintFires,
+        effective: eff,
+        actionId:  action,
         recommendation,
     }
 }
@@ -263,9 +275,14 @@ function printDecisionSignal(label, signal, prevSignal = null) {
         return
     }
     const r = signal.recent
+    const eff = signal.effective
+    // Tag thresholds when they differ from the global defaults so the
+    // dev sees that this action runs under a per-action policy.
+    const succTag = (eff.minSuccessRate !== MIN_SUCCESS_RATE) ? '  (per-action)' : ''
+    const errTag  = (eff.maxErrorRate   !== MAX_ERROR_RATE)   ? '  (per-action)' : ''
     console.log(`  recent: ${r.click}c ${r.confirm}f ${r.success}s ${r.error}e`)
-    console.log(`  recent success rate: ${fmtRate(signal.successRate)} (${r.success}/${r.click})  [threshold ≥ 95.0%]`)
-    console.log(`  recent error rate:   ${fmtRate(signal.errorRate)} (${r.error}/${r.click})  [threshold ≤ ${(MAX_ERROR_RATE * 100).toFixed(1)}%]`)
+    console.log(`  recent success rate: ${fmtRate(signal.successRate)} (${r.success}/${r.click})  [threshold ≥ ${(eff.minSuccessRate * 100).toFixed(1)}%${succTag}]`)
+    console.log(`  recent error rate:   ${fmtRate(signal.errorRate)} (${r.error}/${r.click})  [threshold ≤ ${(eff.maxErrorRate * 100).toFixed(1)}%${errTag}]`)
     console.log(`  invariants:          ${signal.validation.valid ? 'valid' : 'INVALID'}`)
     if (!signal.validation.valid) {
         for (const issue of signal.validation.issues) console.log(`    - ${issue}`)
@@ -371,22 +388,37 @@ function runSweep(name) {
     const successPct = slot.confirm > 0 ? (slot.success / slot.confirm) * 100 : 0
     const errorPct   = slot.confirm > 0 ? (slot.error   / slot.confirm) * 100 : 0
 
+    // The "current defaults" marker uses the ACTION-EFFECTIVE
+    // thresholds, not the global ones. For attendance.mark_present
+    // these are 90%/10% (per-action override); for other actions
+    // they're the global 95%/5%. Surfacing the actual effective
+    // policy here avoids the panel and the CLI disagreeing about
+    // what "the default" means for this action.
+    const eff = getActionThresholds(ATTENDANCE)
+    const isPerAction = eff.minSuccessRate !== MIN_SUCCESS_RATE
+        || eff.maxErrorRate !== MAX_ERROR_RATE
+    const policyTag = isPerAction
+        ? `  (per-action override for ${ATTENDANCE})`
+        : '  (global defaults)'
+
     console.log(`\n=== SWEEP (2D) — ${name}  (${def.description}) ===`)
     console.log(`  recent: ${slot.click}c ${slot.confirm}f ${slot.success}s ${slot.error}e`
         + ` (success ${successPct.toFixed(1)}%, error ${errorPct.toFixed(1)}%)`)
+    console.log(`  effective policy: success ≥ ${(eff.minSuccessRate * 100).toFixed(1)}%,`
+        + ` error ≤ ${(eff.maxErrorRate * 100).toFixed(1)}%${policyTag}`)
 
     const summaries = []
     for (const succ of SUCCESS_SWEEP_THRESHOLDS) {
-        const isSuccDefault = Math.abs(succ - MIN_SUCCESS_RATE) < 1e-9
-        const succLabel = `${(succ * 100).toFixed(1)}%${isSuccDefault ? '  (default)' : ''}`
+        const isSuccEffective = Math.abs(succ - eff.minSuccessRate) < 1e-9
+        const succLabel = `${(succ * 100).toFixed(1)}%${isSuccEffective ? '  (effective)' : ''}`
         console.log(`\n  ── success threshold ≥ ${succLabel} ──`)
         const verdicts = runErrorSweepRow(slot, succ, ERROR_SWEEP_THRESHOLDS)
         for (const v of verdicts) {
             const padded     = `${(v.errThreshold * 100).toFixed(1)}%`.padStart(7)
             const hintStr    = v.hint ? 'ON ' : 'OFF'
-            const isErrDflt  = Math.abs(v.errThreshold - MAX_ERROR_RATE) < 1e-9
-            const dfltTag    = (isErrDflt && isSuccDefault) ? '   ← current defaults' : ''
-            console.log(`    ${padded}    ${hintStr}    ${v.reason}${dfltTag}`)
+            const isErrEff   = Math.abs(v.errThreshold - eff.maxErrorRate) < 1e-9
+            const effTag     = (isErrEff && isSuccEffective) ? '   ← current effective' : ''
+            console.log(`    ${padded}    ${hintStr}    ${v.reason}${effTag}`)
         }
         summaries.push({ succ, summary: describeFlip(verdicts, succ) })
     }
@@ -394,9 +426,9 @@ function runSweep(name) {
     console.log('')
     console.log('  ── 2D summary ──')
     for (const s of summaries) {
-        const isDefault = Math.abs(s.succ - MIN_SUCCESS_RATE) < 1e-9
-        const tag = isDefault ? '  (current default)' : ''
-        console.log(`    success ≥ ${(s.succ * 100).toFixed(1)}%${tag.padEnd(20)}: ${s.summary}`)
+        const isEffective = Math.abs(s.succ - eff.minSuccessRate) < 1e-9
+        const tag = isEffective ? '  (current effective)' : ''
+        console.log(`    success ≥ ${(s.succ * 100).toFixed(1)}%${tag.padEnd(22)}: ${s.summary}`)
     }
     console.log('')
 

@@ -17,6 +17,10 @@ import {
     validateRowSlots,
     getRecentSlot,
     buildSessionSnapshot,
+    ACTION_THRESHOLDS,
+    getActionThresholds,
+    MAX_ERROR_RATE,
+    MIN_SUCCESS_RATE,
 } from './timelineTelemetry.js'
 
 // Silence console output during tests — the module logs via
@@ -174,6 +178,108 @@ test('hint — minSuccessRate boundary (success rate exactly at threshold)', () 
     assert.equal(shouldHintConfirmRemoval(slot),                              true)   // 95%≥95% boundary
     assert.equal(shouldHintConfirmRemoval(slot, { minSuccessRate: 0.96 }),    false)
     assert.equal(shouldHintConfirmRemoval(slot, { minSuccessRate: 0.94 }),    true)
+})
+
+// ── Per-action threshold overrides ─────────────────────────────────────────
+
+test('ACTION_THRESHOLDS — attendance.mark_present has the (0.90, 0.10) override', () => {
+    const override = ACTION_THRESHOLDS[TIMELINE_ACTIONS.MARK_PRESENT]
+    assert.ok(override)
+    assert.equal(override.minSuccessRate, 0.90)
+    assert.equal(override.maxErrorRate,   0.10)
+})
+
+test('ACTION_THRESHOLDS — top-level frozen + entry frozen (no mutation)', () => {
+    assert.throws(() => { ACTION_THRESHOLDS.foo = 'bar' })
+    assert.throws(() => { ACTION_THRESHOLDS[TIMELINE_ACTIONS.MARK_PRESENT].minSuccessRate = 0 })
+})
+
+test('ACTION_THRESHOLDS — other actions are NOT overridden (fall to global defaults)', () => {
+    assert.equal(ACTION_THRESHOLDS[TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR],   undefined)
+    assert.equal(ACTION_THRESHOLDS[TIMELINE_ACTIONS.MARK_ASSIGNMENT],     undefined)
+})
+
+test('getActionThresholds — known action returns the override', () => {
+    const t = getActionThresholds(TIMELINE_ACTIONS.MARK_PRESENT)
+    assert.equal(t.minSuccessRate, 0.90)
+    assert.equal(t.maxErrorRate,   0.10)
+})
+
+test('getActionThresholds — unknown action returns global defaults', () => {
+    const t = getActionThresholds('nope.unknown')
+    assert.equal(t.minSuccessRate, MIN_SUCCESS_RATE)
+    assert.equal(t.maxErrorRate,   MAX_ERROR_RATE)
+})
+
+test('getActionThresholds — non-overridden action returns global defaults', () => {
+    const t = getActionThresholds(TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR)
+    assert.equal(t.minSuccessRate, MIN_SUCCESS_RATE)
+    assert.equal(t.maxErrorRate,   MAX_ERROR_RATE)
+})
+
+// ── 3-tier resolution in shouldHintConfirmRemoval ──────────────────────────
+
+test('hint — opts.actionId for OVERRIDDEN action uses per-action thresholds', () => {
+    // 9s + 1e in 10 cycles → success 90%, error 10%.
+    // Without actionId: defaults 95%/5% → blocks (success 90% < 95%).
+    // With actionId='attendance.mark_present': uses 90%/10% → passes.
+    const slot = { click: 10, confirm: 10, success: 9, error: 1 }
+    assert.equal(
+        shouldHintConfirmRemoval(slot),
+        false,
+        'no actionId → global defaults block',
+    )
+    assert.equal(
+        shouldHintConfirmRemoval(slot, { actionId: TIMELINE_ACTIONS.MARK_PRESENT }),
+        true,
+        'attendance actionId → per-action override surfaces the hint',
+    )
+})
+
+test('hint — opts.actionId for NON-OVERRIDDEN action uses global defaults', () => {
+    const slot = { click: 10, confirm: 10, success: 9, error: 1 }
+    assert.equal(
+        shouldHintConfirmRemoval(slot, { actionId: TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR }),
+        false,
+        'behaviour actionId → no override → global defaults block (90% < 95%)',
+    )
+    assert.equal(
+        shouldHintConfirmRemoval(slot, { actionId: TIMELINE_ACTIONS.MARK_ASSIGNMENT }),
+        false,
+        'assignment actionId → no override → global defaults block',
+    )
+})
+
+test('hint — explicit opts.* overrides per-action override (sweep precedence)', () => {
+    // Same low-error slot. With per-action override (90%/10%): hint = ON.
+    // With explicit minSuccessRate: 0.95 OVERRIDING the per-action 0.90:
+    //   success 90% < 95% → blocks. Sweep can force stricter than per-action.
+    const slot = { click: 10, confirm: 10, success: 9, error: 1 }
+    assert.equal(
+        shouldHintConfirmRemoval(slot, { actionId: TIMELINE_ACTIONS.MARK_PRESENT }),
+        true,
+    )
+    assert.equal(
+        shouldHintConfirmRemoval(slot, {
+            actionId:       TIMELINE_ACTIONS.MARK_PRESENT,
+            minSuccessRate: 0.95,   // explicit overrides per-action 0.90
+        }),
+        false,
+    )
+    assert.equal(
+        shouldHintConfirmRemoval(slot, {
+            actionId:     TIMELINE_ACTIONS.MARK_PRESENT,
+            maxErrorRate: 0.05,     // explicit overrides per-action 0.10
+        }),
+        false,   // error 10% > 5% explicit override → blocks
+    )
+})
+
+test('hint — backward compat: no actionId in opts → global defaults (existing behaviour)', () => {
+    // Sanity check that adding actionId resolution didn't break the
+    // panel-style call site (which won't pass actionId until updated).
+    const slot = { click: 5, confirm: 5, success: 5, error: 0 }
+    assert.equal(shouldHintConfirmRemoval(slot), true)  // clean → ON under defaults
 })
 
 test('hint — success/confirm < 0.95 → false (rate threshold)', () => {

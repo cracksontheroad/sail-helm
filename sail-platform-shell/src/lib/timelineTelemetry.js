@@ -147,8 +147,57 @@ export function getActionMeta(action) {
  * @returns {boolean}
  */
 export const MIN_HINT_CLICKS  = 5
-export const MAX_ERROR_RATE   = 0.05   // 5%
-export const MIN_SUCCESS_RATE = 0.95   // 95%
+export const MAX_ERROR_RATE   = 0.05   // 5%   — global default
+export const MIN_SUCCESS_RATE = 0.95   // 95%  — global default
+
+/**
+ * Per-action threshold overrides. Empirically grounded — derived
+ * from running the CLI sweep against representative event traces
+ * and noticing which actions are "outside the global hint envelope"
+ * for non-policy reasons (i.e. the action is genuinely lower-stakes
+ * and tolerates a different success/error mix).
+ *
+ * Resolution order (in shouldHintConfirmRemoval):
+ *   1. Explicit opts.minSuccessRate / opts.maxErrorRate (sweep mode)
+ *   2. ACTION_THRESHOLDS[opts.actionId] (this map)
+ *   3. Global defaults (MIN_SUCCESS_RATE, MAX_ERROR_RATE)
+ *
+ * Why per-action and not per-domain or per-row:
+ *   * Per-domain ('attendance' vs 'behaviour') would couple the
+ *     policy to the event-type taxonomy. The action is the actual
+ *     thing being decided; tying thresholds to it is more honest.
+ *   * Per-row would be over-engineering — there's no signal that
+ *     individual rows behave differently from their action class.
+ *
+ * Override `attendance.mark_present` to (90% success, 10% error)
+ * because the 2D sweep showed it would surface the friction-removal
+ * hint at those thresholds — and the action itself is genuinely
+ * low-stakes (state correction, reversible, non-destructive). Other
+ * actions stay at the global 95%/5% policy.
+ */
+export const ACTION_THRESHOLDS = Object.freeze({
+    'attendance.mark_present': Object.freeze({
+        minSuccessRate: 0.90,
+        maxErrorRate:   0.10,
+    }),
+    // 'behaviour.resolve' and 'assignment.mark_submitted' fall
+    // through to global defaults. Add an entry here when the sweep
+    // surfaces evidence for a different policy on a specific action.
+})
+
+/**
+ * Resolve effective thresholds for a given action — explicit
+ * override falls back to global defaults. Useful for the CLI's
+ * "effective thresholds" display and for any consumer that needs
+ * to know what gates the heuristic will use.
+ */
+export function getActionThresholds(actionId) {
+    const override = ACTION_THRESHOLDS[actionId] || {}
+    return {
+        minSuccessRate: override.minSuccessRate ?? MIN_SUCCESS_RATE,
+        maxErrorRate:   override.maxErrorRate   ?? MAX_ERROR_RATE,
+    }
+}
 
 export function shouldHintConfirmRemoval(slot, opts = {}) {
     if (!slot) return false
@@ -160,14 +209,26 @@ export function shouldHintConfirmRemoval(slot, opts = {}) {
     const confirm = slot.confirm ?? 0
     const success = slot.success ?? 0
     const error   = slot.error   ?? 0
-    // Two parameters can be overridden — used by the sweep mode of
-    // the simulation CLI to explore the 2D decision surface without
-    // editing source. Defaults mirror the exported constants so
-    // production callers (panel) and existing tests continue
-    // working unchanged. The volume + ratio-safety gates stay
-    // fixed; if those ever need exploration, that's another slice.
-    const maxErrorRate   = opts.maxErrorRate   ?? MAX_ERROR_RATE
-    const minSuccessRate = opts.minSuccessRate ?? MIN_SUCCESS_RATE
+    // Three-tier threshold resolution:
+    //   1. Explicit opts.* — sweep CLI uses this to explore the
+    //      decision surface without committing to a policy change.
+    //   2. ACTION_THRESHOLDS[opts.actionId] — per-action policy,
+    //      empirically grounded by sweep findings.
+    //   3. Global defaults — safe fallback when no per-action
+    //      override exists.
+    // The cascade keeps production callers (panel) honest by
+    // automatically picking up per-action policy when they pass
+    // `actionId`, while leaving the sweep mode able to override
+    // the policy for parameter exploration.
+    const actionDefaults = opts.actionId
+        ? getActionThresholds(opts.actionId)
+        : null
+    const maxErrorRate   = opts.maxErrorRate
+        ?? actionDefaults?.maxErrorRate
+        ?? MAX_ERROR_RATE
+    const minSuccessRate = opts.minSuccessRate
+        ?? actionDefaults?.minSuccessRate
+        ?? MIN_SUCCESS_RATE
     if (click   < MIN_HINT_CLICKS) return false
     if (confirm < 1)               return false   // ratio safety
     const errorRate = error / confirm

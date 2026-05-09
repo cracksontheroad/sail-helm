@@ -410,8 +410,14 @@ export default function TimelineDebugPanel() {
                         // label is what disambiguates.)
                         const hintSourceIsRecent = recent.click > 0
                         const hintSlot           = hintSourceIsRecent ? recent : slot
+                        // Pass actionId so the heuristic picks up any
+                        // per-action threshold override from
+                        // ACTION_THRESHOLDS (e.g. attendance.mark_present
+                        // uses 90%/10% instead of the global 95%/5%).
+                        // Other actions still get the global defaults
+                        // until evidence supports overriding them.
                         const hintRemoveConfirm  = requiresConfirm
-                            && shouldHintConfirmRemoval(hintSlot)
+                            && shouldHintConfirmRemoval(hintSlot, { actionId: key })
                         const hintSourceLabel = hintSourceIsRecent ? 'recent' : 'lifetime'
                         return (
                             <div key={key} style={{ marginBottom: 6 }}>
