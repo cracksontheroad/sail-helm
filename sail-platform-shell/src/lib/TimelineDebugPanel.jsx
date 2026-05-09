@@ -120,8 +120,24 @@ export default function TimelineDebugPanel() {
                     {ACTION_LABELS.map(({ key, label }) => {
                         const slot = byAction[key]
                         if (!slot) return null
-                        const conv = slot.click > 0
-                            ? Math.round((slot.confirm / slot.click) * 100)
+                        // Funnel rates — both percent integers, both
+                        // null when their denominator is zero so the
+                        // panel never lies about no-data states.
+                        //   confirm rate = confirm / click
+                        //     → "did the user follow through after
+                        //        clicking the first time?"
+                        //   success rate = success / confirm
+                        //     → "did the RPC + refetch actually
+                        //        complete after the user committed?"
+                        // Together they decompose the loop:
+                        //   high confirm + low success  → system issue
+                        //   low confirm + high success  → UX hesitation
+                        //   both high                   → healthy
+                        const conv = slot.click   > 0
+                            ? Math.round((slot.confirm / slot.click)   * 100)
+                            : null
+                        const succ = slot.confirm > 0
+                            ? Math.round((slot.success / slot.confirm) * 100)
                             : null
                         return (
                             <div key={key} style={{ marginBottom: 6 }}>
@@ -135,6 +151,16 @@ export default function TimelineDebugPanel() {
                                             {conv}% confirm
                                         </span>
                                     )}
+                                    <span style={{
+                                        marginLeft: 8,
+                                        // Dimmer for the no-data
+                                        // placeholder so the eye
+                                        // reads "yet to happen"
+                                        // rather than "0%".
+                                        opacity: succ === null ? 0.5 : 0.75,
+                                    }}>
+                                        {succ === null ? '—' : `${succ}%`} success
+                                    </span>
                                 </div>
                                 {slot.avgDurationMs !== null && (
                                     <div style={{ opacity: 0.75 }}>
