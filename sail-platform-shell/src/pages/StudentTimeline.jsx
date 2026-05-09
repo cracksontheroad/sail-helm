@@ -398,19 +398,26 @@ function renderSingle(e, i, isFirst, recentlyUpdatedKey, onAddBehaviourNote) {
         actorLabelFor(e),
         formatTimestamp(e.ts),
     ].filter(Boolean).join(' · ')
-    // Action affordance — currently scoped to behaviour events
-    // only. Probe action: clicking logs context, no backend write.
-    // Deliberately spartan vs the attendance flow:
-    //   * no two-click confirmation (annotation is non-destructive,
-    //     so accidental clicks are cheap),
-    //   * no highlight (no state change to confirm),
-    //   * no disabled/marking variant (no async work yet).
-    // The behaviour row inherits hover affordance from the same
-    // TimelineRow contract: button at 0.65 opacity at rest, 1.0
-    // on row hover, neutral-gray hover background.
-    let action = null
+    // ── Primary action resolution ──────────────────────────────
+    //
+    // PRODUCT RULE: at most ONE primary action per row (same
+    // rule as renderGroup). New action types for single events
+    // — for any event type, attendance/behaviour/assignment_*
+    // — must be added as `else if` branches in this ladder, not
+    // as parallel `if`s. First matching branch wins.
+    //
+    // The behaviour "Add note" is deliberately spartan vs the
+    // attendance flow: no two-click confirmation (annotation is
+    // non-destructive, so accidental clicks are cheap), no
+    // highlight (no state change to confirm), no disabled or
+    // marking variant (no async work yet). Each action type
+    // opts into whatever subset of the TimelineRow.action
+    // contract it actually needs. The hover affordance is
+    // inherited automatically — the row carries an action, so
+    // TimelineRow tags it with the actionable class.
+    let primaryAction = null
     if (e.type === 'behaviour' && typeof onAddBehaviourNote === 'function') {
-        action = {
+        primaryAction = {
             label: 'Add note',
             onClick: () => onAddBehaviourNote({
                 type:        'behaviour',
@@ -424,13 +431,21 @@ function renderSingle(e, i, isFirst, recentlyUpdatedKey, onAddBehaviourNote) {
             }),
         }
     }
+    // else if (e.type === 'assignment_assigned' && ...) {
+    //     primaryAction = { label: 'View assignment', ... }
+    // }
+    // else if (e.type === 'attendance' && ...) {
+    //     // (attendance singles are length-1 runs that didn't
+    //     // form a group — they currently don't get an action,
+    //     // but a future quick-action could be added here.)
+    // }
     return (
         <TimelineRow
             key={`single-${e.type}-${e.ts}-${i}`}
             icon={decor.icon}
             ariaLabel={e.type}
             isFirst={isFirst}
-            action={action}
+            action={primaryAction}
             highlighted={recentlyUpdatedKey === e.ts}
         >
             <div style={{ fontWeight: 500, color: decor.color }}>{e.title}</div>
@@ -517,35 +532,44 @@ function renderGroup(
         formatTimestamp(newest.ts),
     ].filter(Boolean).join(' · ')
 
-    // Action affordance — "Mark present" only when:
-    //   (a) the page passed a handler (no handler = no slot),
-    //   (b) the current/final status isn't already 'present' (no
-    //       point offering an action that's a no-op).
+    // ── Primary action resolution ──────────────────────────────
+    //
+    // PRODUCT RULE: at most ONE primary action per row. Cluttered
+    // rows defeat the discoverability work the system has put in;
+    // a row that affords one obvious next step beats a row that
+    // affords four equal-weight options.
+    //
+    // STRUCTURAL ENFORCEMENT: action candidates resolve via a
+    // mutually-exclusive `if / else if` ladder. New action types
+    // for grouped attendance rows must be added as `else if`
+    // branches — never as parallel independent `if`s, never as
+    // an array, never combined. The first matching branch wins;
+    // ordering reflects priority.
+    //
+    // Within a single action's render path (e.g. mark-present),
+    // the state cascade (marking > confirming > default) is
+    // internal to that branch — it's a label/style cascade, not
+    // multiple actions.
+    //
     // Context payload is intentionally lean — just enough that the
     // RPC wrapper can scope the write without re-querying:
     // `latestClassId` + `latestSessionDate` identify the session,
     // `studentId` is closure-bound at page level.
-    //
-    // Button state cascade (priority: marking > confirming > default):
-    //   * `markingKey === newest.ts`  → "Marking…" + disabled
-    //   * `confirmingKey === newest.ts` → "Confirm" + amber variant
-    //   * otherwise                    → "Mark present" + default
-    // Each state derives from the same row-anchor identity
-    // (`newest.ts`) so a rapid click sequence transitions through
-    // the cascade cleanly without any state thrash.
     const finalStatus = newest?.meta?.status
-    const showMarkPresent =
-        typeof onMarkPresent === 'function' &&
-        finalStatus &&
-        String(finalStatus).toLowerCase() !== 'present'
-    const isMarking    = showMarkPresent && markingKey    === newest.ts
-    const isConfirming = showMarkPresent && !isMarking && confirmingKey === newest.ts
-    let label
-    if (isMarking)         label = 'Marking…'
-    else if (isConfirming) label = 'Confirm'
-    else                   label = 'Mark present'
-    const action = showMarkPresent
-        ? {
+    let primaryAction = null
+    if (typeof onMarkPresent === 'function'
+        && finalStatus
+        && String(finalStatus).toLowerCase() !== 'present') {
+        // Branch: mark-present. Internal label/style cascade
+        // (priority: marking > confirming > default) lives here,
+        // bound to this single action's render.
+        const isMarking    = markingKey    === newest.ts
+        const isConfirming = !isMarking && confirmingKey === newest.ts
+        let label
+        if (isMarking)         label = 'Marking…'
+        else if (isConfirming) label = 'Confirm'
+        else                   label = 'Mark present'
+        primaryAction = {
             label,
             disabled: isMarking,
             variant:  isConfirming ? 'confirming' : 'default',
@@ -559,7 +583,10 @@ function renderGroup(
                 latestActorId:     newest?.meta?.actor_id ?? null,
             }),
         }
-        : null
+    }
+    // else if (...future grouped-attendance action...) {
+    //     primaryAction = { ... }
+    // }
 
     return (
         <TimelineRow
@@ -567,7 +594,7 @@ function renderGroup(
             icon={decor.icon}
             ariaLabel="attendance"
             isFirst={isFirst}
-            action={action}
+            action={primaryAction}
             highlighted={recentlyUpdatedKey === newest.ts}
         >
             <div style={{ fontWeight: 500, color: decor.color }}>
