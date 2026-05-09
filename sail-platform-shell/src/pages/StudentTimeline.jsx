@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { getStudentTimeline } from '../services/timeline'
 import { markAttendancePresent } from '../services/attendance'
+import { resolveBehaviourEvent } from '../services/behaviour'
 
 /**
  * /schools/:schoolId/students/:studentId/timeline — Phase D
@@ -480,7 +481,10 @@ function SubtleLine({ children }) {
     )
 }
 
-function renderSingle(e, i, isFirst, recentlyUpdatedKey, onAddBehaviourNote) {
+function renderSingle(
+    e, i, isFirst,
+    recentlyUpdatedKey, onResolveBehaviour, markingKey, confirmingKey,
+) {
     const decor = TYPE_DECORATION[e.type] || { icon: '·', color: '#5b6877' }
     const subline = [
         eventSubtext(e),
@@ -495,28 +499,33 @@ function renderSingle(e, i, isFirst, recentlyUpdatedKey, onAddBehaviourNote) {
     // — must be added as `else if` branches in this ladder, not
     // as parallel `if`s. First matching branch wins.
     //
-    // The behaviour "Add note" is deliberately spartan vs the
-    // attendance flow: no two-click confirmation (annotation is
-    // non-destructive, so accidental clicks are cheap), no
-    // highlight (no state change to confirm), no disabled or
-    // marking variant (no async work yet). Each action type
-    // opts into whatever subset of the TimelineRow.action
-    // contract it actually needs. The hover affordance is
-    // inherited automatically — the row carries an action, so
-    // TimelineRow tags it with the actionable class.
+    // Behaviour "Resolve" gets the FULL interaction cascade
+    // (marking > confirming > default), same as attendance
+    // mark-present. State slots (markingKey/confirmingKey) are
+    // shared across action types — each slot is keyed by row
+    // anchor, so only one row can be in any given state at a
+    // time, regardless of which action type drives it.
     let primaryAction = null
-    if (e.type === 'behaviour' && typeof onAddBehaviourNote === 'function') {
+    if (e.type === 'behaviour'
+        && String(e.meta?.status ?? '').toLowerCase() === 'open'
+        && typeof onResolveBehaviour === 'function') {
+        const isMarking    = markingKey    === e.ts
+        const isConfirming = !isMarking && confirmingKey === e.ts
+        let label
+        if (isMarking)         label = 'Resolving…'
+        else if (isConfirming) label = 'Confirm'
+        else                   label = 'Resolve'
         primaryAction = {
-            label: 'Add note',
-            onClick: () => onAddBehaviourNote({
-                type:        'behaviour',
-                eventTs:     e.ts,
-                eventTitle:  e.title,
-                classId:     e.meta?.class_id    ?? null,
-                className:   e.meta?.class_name  ?? null,
-                note:        e.meta?.note        ?? null,
-                actorId:     e.meta?.actor_id    ?? null,
-                actorName:   e.meta?.actor_name  ?? null,
+            label,
+            disabled: isMarking,
+            variant:  isConfirming ? 'confirming' : 'default',
+            onClick: () => onResolveBehaviour({
+                eventId:    e.meta?.event_id ?? null,
+                eventTs:    e.ts,
+                eventTitle: e.title,
+                classId:    e.meta?.class_id    ?? null,
+                className:  e.meta?.class_name  ?? null,
+                note:       e.meta?.note        ?? null,
             }),
         }
     }
@@ -826,30 +835,67 @@ export default function StudentTimelinePage() {
     // update of `events`. The grouping logic, trend arrow, etc.
     // all derive from `events`, and refetching avoids the trap of
     // hand-editing one event in the middle of a sorted UNION.
-    // Placeholder action handler for behaviour rows — proves that
-    // the action contract generalises beyond attendance. Currently
-    // logs only; no confirmation, no highlight, no backend wiring.
+    // Real action handler for behaviour rows — replaces the earlier
+    // "Add note" placeholder. Resolves an open behaviour event via
+    // bridge_resolve_behaviour_event, then refetches the timeline.
     //
-    // Why a probe: every system that exercises only one action path
-    // tends to bake in hidden coupling. By adding a second, distinct
-    // action type now (different domain, different intent — annotation
-    // not state-correction) we surface any rigidity in the contract
-    // before it becomes load-bearing. If this feels awkward to wire,
-    // the contract has a flaw we can fix cheaply; if it feels
-    // boring, the contract is real.
+    // Reuses the SAME state slots as onMarkPresent — no new state.
+    // Each slot is keyed by row anchor (`context.eventTs`), so the
+    // confirming/marking/recentlyUpdated cascade works identically.
+    // The two handlers are parallel because each domain owns its
+    // own RPC call + post-refetch matching, but they share the
+    // interaction system completely (cascade, pre-highlight, refetch,
+    // re-anchor).
     //
-    // Context payload mirrors `onMarkPresent` shape — `studentId` /
-    // `schoolId` from page closure, plus an `eventTs` anchor and the
-    // domain-specific meta. A future real "add note" workflow can
-    // use these to identify the parent behaviour event without re-
-    // querying.
-    const onAddBehaviourNote = (context) => {
-        // eslint-disable-next-line no-console
-        console.log('[Timeline] Add note (placeholder — no backend wired yet)', {
-            studentId,
-            schoolId,
-            ...context,
-        })
+    // Behaviour timestamp semantics: behaviour_events.created_at is
+    // WHEN the incident happened, not WHEN it was last touched.
+    // Resolving doesn't change created_at, so the row keeps its
+    // position in the timeline AND its `ts` value. The post-refetch
+    // re-anchor matches by event_id (carried in meta) — id-based
+    // match is the only honest re-anchor when ts is stable.
+    const onResolveBehaviour = async (context) => {
+        if (markingKey) return
+        if (!context?.eventId) {
+            // eslint-disable-next-line no-console
+            console.error('[Timeline] Resolve behaviour: missing event_id', context)
+            return
+        }
+        const key = context.eventTs
+        // First click → arm.
+        if (confirmingKey !== key) {
+            setConfirmingKey(key)
+            return
+        }
+        // Second click → execute.
+        setConfirmingKey(null)
+        setMarkingKey(key)
+        // Pre-highlight (same pattern as mark-present): immediate
+        // visual ack, not optimistic data.
+        setRecentlyUpdatedKey(key)
+        try {
+            await resolveBehaviourEvent({ eventId: context.eventId })
+            const rows = await getStudentTimeline({
+                schoolId, studentId, limit: PAGE_SIZE,
+            })
+            setEvents(rows)
+            setHasMore(rows.length >= PAGE_SIZE)
+            // Re-anchor by event_id. Behaviour rows keep their ts on
+            // resolve (created_at doesn't shift), so the matched
+            // row's ts is == the pre-highlight key. The set is still
+            // performed so the highlight effect's cleanup-canceling
+            // timer restarts cleanly with a fresh 2.5s window.
+            const updated = (rows || []).find(r =>
+                r.type === 'behaviour' &&
+                r.meta?.event_id === context.eventId &&
+                String(r.meta?.status).toLowerCase() === 'resolved'
+            )
+            if (updated?.ts) setRecentlyUpdatedKey(updated.ts)
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('[Timeline] Resolve behaviour failed:', err)
+        } finally {
+            setMarkingKey(null)
+        }
     }
 
     const onMarkPresent = async (context) => {
@@ -993,7 +1039,8 @@ export default function StudentTimelinePage() {
                         }
                         return renderSingle(
                             item.event, i, isFirst,
-                            recentlyUpdatedKey, onAddBehaviourNote,
+                            recentlyUpdatedKey, onResolveBehaviour,
+                            markingKey, confirmingKey,
                         )
                     })}
                 </div>

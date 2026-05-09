@@ -59,6 +59,30 @@ export async function logBehaviourEvent({ studentUserId, classId = null, type, n
 }
 
 /**
+ * Phase D — quick "Resolve" action from the StudentTimeline
+ * behaviour row. Flips a single open behaviour event's
+ * `status` to 'resolved' and records the actor via the audit
+ * trail. Idempotent in shape (re-resolving an already-resolved
+ * row is a no-op against the CHECK constraint), so a stale-
+ * cache replay from the UI is safe.
+ *
+ * Permission gate matches bridge_log_behaviour_event:
+ * `is_staff_of_school OR has_permission('manage_behaviour')`.
+ * Anyone who can record behaviour can resolve it.
+ *
+ * @param {{ eventId: string }} args
+ * @returns {Promise<{ behaviour_event_id, school_id, student_user_id, status }>}
+ */
+export async function resolveBehaviourEvent({ eventId } = {}) {
+    if (!eventId) throw new Error('eventId is required')
+    const { data, error } = await supabase.rpc('bridge_resolve_behaviour_event', {
+        p_event_id: eventId,
+    })
+    if (error) throw error
+    return data
+}
+
+/**
  * List recent behaviour events for one student. Returns events
  * ordered newest-first, joined with class_name + the logger's name +
  * email so the UI can render rows without extra round-trips.
