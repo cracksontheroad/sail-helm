@@ -222,15 +222,18 @@ export default function BehaviourPage() {
                         ))
                     )}
                 </select>
-                {/* Phase D — entry link to the unified student timeline.
-                    Only renders when school + student context is loaded;
-                    school_id derived from getClass payload. */}
+                {/* Phase D pair-route entry. Points at the Student
+                    parent page (the canonical anchor), not directly at
+                    the timeline — consistent with the other operator
+                    surfaces (Attendance / Gradebook / Class submissions).
+                    From the parent the operator clicks once more to
+                    reach the timeline. */}
                 {selectedStudentId && klass?.school?.id && (
                     <Link
-                        to={`/schools/${klass.school.id}/students/${selectedStudentId}/timeline`}
+                        to={`/schools/${klass.school.id}/students/${selectedStudentId}`}
                         style={{ fontSize: 12.5, color: '#3b6cd8' }}
                     >
-                        View Timeline →
+                        View Student →
                     </Link>
                 )}
             </div>

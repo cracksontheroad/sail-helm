@@ -380,9 +380,24 @@ export default function ClassPage() {
                                                             alignItems: 'baseline', marginBottom: 3,
                                                         }}>
                                                             <span>
+                                                                {/* Phase D pair-route — student name links
+                                                                    to the canonical Student parent page when
+                                                                    school context is available (klass.school.id
+                                                                    resolved from getClass). Falls back to plain
+                                                                    text otherwise. */}
                                                                 <strong>
-                                                                    {s.student_name
-                                                                        || `student ${s.student_id?.slice(0, 8)}…`}
+                                                                    {klass?.school?.id && s.student_id ? (
+                                                                        <Link
+                                                                            to={`/schools/${klass.school.id}/students/${s.student_id}`}
+                                                                            style={{ color: 'inherit' }}
+                                                                        >
+                                                                            {s.student_name
+                                                                                || `student ${s.student_id?.slice(0, 8)}…`}
+                                                                        </Link>
+                                                                    ) : (
+                                                                        s.student_name
+                                                                            || `student ${s.student_id?.slice(0, 8)}…`
+                                                                    )}
                                                                 </strong>
                                                                 <span style={{
                                                                     color: '#94a3b8', marginLeft: 8, fontSize: 12,

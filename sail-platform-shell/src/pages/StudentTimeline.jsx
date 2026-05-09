@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { getStudentTimeline } from '../services/timeline'
 
 /**
@@ -89,7 +89,6 @@ const PAGE_SIZE = 50
 
 export default function StudentTimelinePage() {
     const { schoolId, studentId } = useParams()
-    const navigate = useNavigate()
 
     const [events,      setEvents]      = useState([])
     const [loading,     setLoading]     = useState(true)   // initial load
@@ -147,16 +146,15 @@ export default function StudentTimelinePage() {
     return (
         <div style={{ padding: '20px 24px', maxWidth: 720, margin: '0 auto' }}>
             <div style={{ marginBottom: 12 }}>
-                <button
-                    type="button"
-                    onClick={() => navigate(-1)}
-                    style={{
-                        background: 'none', border: 'none', padding: 0,
-                        fontSize: 12, color: '#5b6877', cursor: 'pointer',
-                    }}
+                {/* Phase D pair-route — deterministic Back to the
+                    student parent page. Works on hard refresh /
+                    deep-link without relying on browser history. */}
+                <Link
+                    to={`/schools/${schoolId}/students/${studentId}`}
+                    style={{ fontSize: 12, color: '#5b6877' }}
                 >
-                    ← Back
-                </button>
+                    ← Back to student
+                </Link>
             </div>
             <h1 style={{ fontSize: 22, margin: '0 0 4px' }}>Student timeline</h1>
             <div style={{ fontSize: 13, color: '#5b6877', marginBottom: 16 }}>

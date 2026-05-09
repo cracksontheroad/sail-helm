@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../lib/AuthContext'
 
@@ -142,7 +143,25 @@ export default function Gradebook() {
                     <tbody>
                         {rows.map(r => (
                             <tr key={r.id}>
-                                <td>{r.student_id}</td>
+                                {/* Phase D pair-route — student_id wrapped
+                                    as a Link to the canonical Student
+                                    parent page. schoolId is at page level
+                                    via useAuth(). The cell still shows
+                                    the raw uuid (no name lookup here —
+                                    Gradebook is data-dense, the link is
+                                    enough). */}
+                                <td>
+                                    {schoolId && r.student_id ? (
+                                        <Link
+                                            to={`/schools/${schoolId}/students/${r.student_id}`}
+                                            style={{ color: 'inherit' }}
+                                        >
+                                            {r.student_id}
+                                        </Link>
+                                    ) : (
+                                        r.student_id
+                                    )}
+                                </td>
                                 <td>{r.assignments?.title ?? <span className="muted">—</span>}</td>
                                 <td><StatusBadge status={r.status} /></td>
                                 <td className="num-cell"><GradeCell value={r.grade} /></td>

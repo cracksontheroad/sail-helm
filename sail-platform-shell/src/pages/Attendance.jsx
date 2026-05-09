@@ -450,8 +450,23 @@ export default function AttendancePage() {
                             }}
                         >
                             <div style={{ minWidth: 0, flex: 1 }}>
+                                {/* Phase D pair-route — student name links
+                                    to the canonical Student parent page.
+                                    Falls back to plain text when the
+                                    page hasn't resolved school context
+                                    yet (initial render before getClass
+                                    resolves). */}
                                 <div style={{ fontWeight: 500, color: '#161b22', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {s.name}
+                                    {klass?.school?.id ? (
+                                        <Link
+                                            to={`/schools/${klass.school.id}/students/${s.id}`}
+                                            style={{ color: '#161b22', textDecoration: 'none' }}
+                                        >
+                                            {s.name}
+                                        </Link>
+                                    ) : (
+                                        s.name
+                                    )}
                                 </div>
                                 {s.email && s.email !== s.name && (
                                     <div style={{ fontSize: 11.5, color: '#7a8290', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
