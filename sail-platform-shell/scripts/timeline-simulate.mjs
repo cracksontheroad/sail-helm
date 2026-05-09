@@ -341,13 +341,20 @@ function describeDrift(slot, actionId) {
     const error   = slot?.error   ?? 0
     const sucRate = success / confirm
     const errRate = error   / confirm
+    // Signed delta in percentage points — answers "how bad is it?"
+    // at a glance. Always show explicit +/- so a quick scan can
+    // distinguish "1pt over, probably noise" from "10pt over,
+    // real problem".
+    const fmtDelta = (d) => `${d >= 0 ? '+' : ''}${(d * 100).toFixed(1)}%`
     if (sucRate < eff.minSuccessRate) {
+        const delta = sucRate - eff.minSuccessRate     // negative
         return `below success threshold `
-            + `(${(sucRate * 100).toFixed(1)}% < ${(eff.minSuccessRate * 100).toFixed(1)}%)`
+            + `(${(sucRate * 100).toFixed(1)}% < ${(eff.minSuccessRate * 100).toFixed(1)}%, ${fmtDelta(delta)})`
     }
     if (errRate > eff.maxErrorRate) {
+        const delta = errRate - eff.maxErrorRate       // positive
         return `above error threshold `
-            + `(${(errRate * 100).toFixed(1)}% > ${(eff.maxErrorRate * 100).toFixed(1)}%)`
+            + `(${(errRate * 100).toFixed(1)}% > ${(eff.maxErrorRate * 100).toFixed(1)}%, ${fmtDelta(delta)})`
     }
     // Unreachable when drift is true (the heuristic can only block
     // at one of the gates above given click ≥ 5 + confirm ≥ 1).
