@@ -24,6 +24,9 @@ build
 # Supabase CLI scratch
 supabase/.temp/
 
+# timeline-simulate output — transient JSON snapshots, regenerate on demand
+scripts/snapshots/
+
 # Finder duplicates (e.g. "package-lock 2.json")
 * [0-9].json
 * [0-9].js

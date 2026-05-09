@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test 'src/lib/*.test.js'"
+    "test": "node --test 'src/lib/*.test.js'",
+    "simulate:timeline": "node scripts/timeline-simulate.mjs"
   },
   "devDependencies": {
     "vite": "^8.0.1"
