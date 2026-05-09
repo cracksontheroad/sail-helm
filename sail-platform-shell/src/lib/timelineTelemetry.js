@@ -149,7 +149,7 @@ export function getActionMeta(action) {
 export const MIN_HINT_CLICKS = 5
 export const MAX_ERROR_RATE  = 0.05   // 5%
 
-export function shouldHintConfirmRemoval(slot) {
+export function shouldHintConfirmRemoval(slot, opts = {}) {
     if (!slot) return false
     // Defensive defaults: callers may pass partial fixtures (tests,
     // experimental aggregator changes). Treat missing as zero so
@@ -159,10 +159,18 @@ export function shouldHintConfirmRemoval(slot) {
     const confirm = slot.confirm ?? 0
     const success = slot.success ?? 0
     const error   = slot.error   ?? 0
+    // The error-rate threshold is the only parameter callers can
+    // override — used by the sweep mode of the simulation CLI to
+    // explore parameter sensitivity without editing source. The
+    // other gates are deliberately fixed; if you need to sweep
+    // them, that's a separate slice. Default mirrors the exported
+    // MAX_ERROR_RATE so production callers (panel) and tests
+    // continue working unchanged.
+    const maxErrorRate = opts.maxErrorRate ?? MAX_ERROR_RATE
     if (click   < MIN_HINT_CLICKS) return false
     if (confirm < 1)               return false   // ratio safety
     const errorRate = error / confirm
-    if (errorRate > MAX_ERROR_RATE) return false
+    if (errorRate > maxErrorRate) return false
     return (success / confirm) >= 0.95
 }
 

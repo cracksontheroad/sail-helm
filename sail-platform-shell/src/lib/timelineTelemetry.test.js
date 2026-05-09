@@ -130,6 +130,31 @@ test('hint — error rate exactly AT threshold (5%) → true (strict-greater gat
     assert.equal(shouldHintConfirmRemoval({ click: 20, confirm: 20, success: 19, error: 1 }), true)
 })
 
+test('hint — opts.maxErrorRate override applies (no behavior change at default)', () => {
+    // Same slot tested under different thresholds. Demonstrates the
+    // sweep mode's mechanic: change the threshold, verdict shifts.
+    // Choosing 19s+1e in 20 cycles (success 95%, error 5%) so the
+    // success-rate gate never blocks; only the error gate moves.
+    const slot = { click: 20, confirm: 20, success: 19, error: 1 }
+    assert.equal(shouldHintConfirmRemoval(slot),                            true)   // default 5% → ON (boundary)
+    assert.equal(shouldHintConfirmRemoval(slot, { maxErrorRate: 0.04 }),    false)  // tighter → OFF (the flip)
+    assert.equal(shouldHintConfirmRemoval(slot, { maxErrorRate: 0.10 }),    true)   // looser → still ON
+    assert.equal(shouldHintConfirmRemoval(slot, { maxErrorRate: 0 }),       false)  // strictest → OFF
+    assert.equal(shouldHintConfirmRemoval(slot, { maxErrorRate: 1.0 }),     true)   // anything goes → ON
+})
+
+test('hint — opts.maxErrorRate alone cannot flip when success rate is the binding gate', () => {
+    // 9s + 1e in 10 cycles → success 90%, error 10%.
+    // Even a generous error threshold can't make the hint fire because
+    // the success-rate gate (95%) is binding. The sweep CLI uses this
+    // pattern to surface "binding constraint" diagnostics.
+    const slot = { click: 10, confirm: 10, success: 9, error: 1 }
+    assert.equal(shouldHintConfirmRemoval(slot, { maxErrorRate: 0.05 }), false)
+    assert.equal(shouldHintConfirmRemoval(slot, { maxErrorRate: 0.10 }), false)
+    assert.equal(shouldHintConfirmRemoval(slot, { maxErrorRate: 0.50 }), false)
+    assert.equal(shouldHintConfirmRemoval(slot, { maxErrorRate: 1.00 }), false)
+})
+
 test('hint — success/confirm < 0.95 → false (rate threshold)', () => {
     // 4/5 = 0.8 → no hint
     assert.equal(shouldHintConfirmRemoval({ click: 5, confirm: 5, success: 4, error: 0 }), false)

@@ -290,18 +290,117 @@ function runOne(name, prevSignal = null) {
     return signal
 }
 
+// ── Sweep mode ────────────────────────────────────────────────────────────
+//
+// Run a scenario across a range of MAX_ERROR_RATE thresholds and print
+// the verdict + blocking-gate diagnosis at each threshold. Surfaces the
+// flip point (the smallest threshold where the hint goes ON) so a dev
+// can SEE the decision boundary instead of guessing where it lands.
+//
+// The 'binding constraint' diagnosis matters more than the flip itself:
+// when the success-rate gate (95%, fixed) is binding above the error-
+// rate gate, no amount of error-threshold tuning will surface the hint.
+// The sweep makes that visible — instead of the dev concluding "the
+// hint is broken" they see "this scenario fails the success gate
+// regardless".
+
+const SWEEP_THRESHOLDS = [0, 0.02, 0.05, 0.10, 0.15, 0.20]
+
+// Re-implements the gate-evaluation order from
+// timelineTelemetry.shouldHintConfirmRemoval so the sweep can name
+// WHICH gate is blocking at each threshold. Stays in sync via the
+// node:test boundary tests on each gate.
+function describeGateAt(slot, threshold) {
+    const click   = slot.click   ?? 0
+    const confirm = slot.confirm ?? 0
+    const success = slot.success ?? 0
+    const error   = slot.error   ?? 0
+    if (click   < 5)  return `click ${click} < 5 (volume)`
+    if (confirm < 1)  return 'confirm = 0 (ratio safety)'
+    const errorRate = error / confirm
+    if (errorRate > threshold) {
+        return `error ${(errorRate * 100).toFixed(1)}% > ${(threshold * 100).toFixed(1)}% threshold`
+    }
+    const successRate = success / confirm
+    if (successRate < 0.95) {
+        return `success ${(successRate * 100).toFixed(1)}% < 95.0% threshold`
+    }
+    return 'all gates pass'
+}
+
+function runSweep(name) {
+    const def = SCENARIOS[name]
+    if (!def) {
+        console.error(`Unknown scenario for sweep: ${name}`)
+        process.exit(1)
+    }
+    const snap = def.run()
+    const slot = snap.actions[ATTENDANCE]?.recent
+    if (!slot || slot.click === 0) {
+        console.log(`\n=== SWEEP — ${name} ===\n  (no recent activity for ${ATTENDANCE})`)
+        return
+    }
+    const successPct = slot.confirm > 0 ? (slot.success / slot.confirm) * 100 : 0
+    const errorPct   = slot.confirm > 0 ? (slot.error   / slot.confirm) * 100 : 0
+
+    console.log(`\n=== SWEEP — ${name}  (${def.description}) ===`)
+    console.log(`  recent: ${slot.click}c ${slot.confirm}f ${slot.success}s ${slot.error}e`
+        + ` (success ${successPct.toFixed(1)}%, error ${errorPct.toFixed(1)}%)`)
+    console.log('')
+    console.log('  threshold   hint   reason')
+    console.log('  ─────────   ────   ──────────────────────────────────────────')
+
+    const verdicts = SWEEP_THRESHOLDS.map(t => ({
+        threshold: t,
+        hint:      shouldHintConfirmRemoval(slot, { maxErrorRate: t }),
+        reason:    null,   // filled below
+    }))
+    for (const v of verdicts) {
+        v.reason = v.hint ? 'all gates pass' : describeGateAt(slot, v.threshold)
+        const padded     = `${(v.threshold * 100).toFixed(1)}%`.padStart(7)
+        const hintStr    = v.hint ? 'ON ' : 'OFF'
+        const isDefault  = Math.abs(v.threshold - MAX_ERROR_RATE) < 1e-9
+        const defaultTag = isDefault ? '   ← current default' : ''
+        console.log(`  ${padded}     ${hintStr}    ${v.reason}${defaultTag}`)
+    }
+    console.log('')
+
+    // Flip detection — the smallest tested threshold where the hint
+    // first goes ON (after being OFF). If always OFF or always ON, no
+    // flip in the tested range.
+    const firstOnIdx = verdicts.findIndex(v => v.hint)
+    if (firstOnIdx === -1) {
+        // Never ON — diagnose binding constraint at the loosest threshold.
+        const loosest = verdicts[verdicts.length - 1]
+        console.log(`  flip: NEVER (hint stays OFF across all tested thresholds)`)
+        console.log(`  binding constraint at ${(loosest.threshold * 100).toFixed(1)}% (loosest tested): ${loosest.reason}`)
+        console.log(`  → tuning MAX_ERROR_RATE alone won't surface the hint here.`)
+    } else if (firstOnIdx === 0) {
+        console.log(`  flip: NEVER (hint already ON at 0% — error rate is below any positive threshold)`)
+    } else {
+        const flipT = verdicts[firstOnIdx].threshold
+        const prevT = verdicts[firstOnIdx - 1].threshold
+        console.log(`  flip: at ${(flipT * 100).toFixed(1)}% threshold`
+            + ` (OFF at ${(prevT * 100).toFixed(1)}% → ON at ${(flipT * 100).toFixed(1)}%)`)
+        console.log(`  → setting MAX_ERROR_RATE ≥ ${(flipT * 100).toFixed(1)}% in source would surface the hint here.`)
+    }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 const arg = process.argv[2]
 
 function usage(code = 0) {
-    console.log('Usage: node scripts/timeline-simulate.mjs <scenario>')
-    console.log('       npm run simulate:timeline -- <scenario>')
+    console.log('Usage: node scripts/timeline-simulate.mjs <command>')
+    console.log('       npm run simulate:timeline -- <command>')
     console.log('')
-    console.log('Scenarios:')
+    console.log('Commands:')
     for (const [name, def] of Object.entries(SCENARIOS)) {
         console.log(`  ${name.padEnd(15)} ${def.description}`)
     }
     console.log(`  ${'all'.padEnd(15)} Run every scenario in sequence with deltas`)
+    console.log(`  ${'sweep [scn]'.padEnd(15)} Sweep MAX_ERROR_RATE thresholds across one scenario`)
+    console.log(`                   (default scn: low-error;`)
+    console.log(`                    use 'sweep all' to sweep every scenario)`)
     process.exit(code)
 }
 
@@ -312,10 +411,17 @@ if (arg === 'all') {
     for (const name of Object.keys(SCENARIOS)) {
         prev = runOne(name, prev)
     }
+} else if (arg === 'sweep') {
+    const scenario = process.argv[3] || 'low-error'
+    if (scenario === 'all') {
+        for (const name of Object.keys(SCENARIOS)) runSweep(name)
+    } else {
+        runSweep(scenario)
+    }
 } else if (SCENARIOS[arg]) {
     runOne(arg)
 } else {
-    console.error(`Unknown scenario: ${arg}`)
+    console.error(`Unknown command: ${arg}`)
     usage(1)
 }
 
