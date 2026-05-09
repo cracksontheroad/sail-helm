@@ -86,6 +86,30 @@ const TIMELINE_HOVER_CSS = `
 .timeline-row-actionable:hover .timeline-row-action {
     opacity: 1;
 }
+/* ─────────────────────────────────────────────────────────────────
+   Vertical rhythm — chunk groups, breathe singles.
+
+   Grouped rows sit tighter (3px below) so consecutive clusters
+   stack as a visual chunk; single rows get a touch more space
+   (7px below) so each standalone event feels distinct.
+
+   :last-child zeroes the margin so the bottom-most row sits flush
+   against the container's bottom border — no orphaned gap.
+
+   Pure margin, no separators or connectors. The existing borderTop
+   between rows still draws the dividing line; the margin creates
+   the rhythm in the negative space above each border.
+─────────────────────────────────────────────────────────────────── */
+.timeline-row-grouped {
+    margin-bottom: 3px;
+}
+.timeline-row-single {
+    margin-bottom: 7px;
+}
+.timeline-row-grouped:last-child,
+.timeline-row-single:last-child {
+    margin-bottom: 0;
+}
 `
 
 function ErrorBox({ error }) {
@@ -300,10 +324,20 @@ function attendanceTrend(first, last) {
  * indentation; only the border itself is the visual difference.
  */
 function TimelineRow({ icon, ariaLabel, isFirst, isGrouped, action, highlighted, children }) {
-    // Class flag: rows that carry an action get hover-affordance
-    // styling via the page-level `<style>` block. Rows without an
-    // action skip the class and stay visually quiet on hover.
-    const className = action ? 'timeline-row-actionable' : undefined
+    // Class composition (page-level <style> handles the rules):
+    //   * `timeline-row-grouped` / `timeline-row-single` — vertical
+    //      rhythm. Consecutive grouped rows stack tightly (3px
+    //      gap); singles get a touch more breathing room (7px).
+    //      Both reset to 0 on :last-child so the bordered container
+    //      doesn't end with an orphaned gap.
+    //   * `timeline-row-actionable` — opt-in hover affordance for
+    //      rows that carry an action.
+    // Class assembly is done as a filtered join so absent variants
+    // don't leak `undefined` into the className string.
+    const className = [
+        isGrouped ? 'timeline-row-grouped' : 'timeline-row-single',
+        action ? 'timeline-row-actionable' : null,
+    ].filter(Boolean).join(' ')
     return (
         <div
             className={className}
