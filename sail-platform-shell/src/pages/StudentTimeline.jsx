@@ -288,8 +288,18 @@ function attendanceTrend(first, last) {
  * producing a fade-out without any animation library. No
  * fade-IN — the row appears already highlighted on mount,
  * which is the desired "your change is right here" cue.
+ *
+ * `isGrouped` (optional bool) signals that the row represents
+ * a collapsed cluster of events (currently: same-day attendance
+ * runs of length ≥2). When true, the row gets a thin low-
+ * contrast left accent so groups visually chunk apart from
+ * singles when scanning. The accent is structure, not signal —
+ * intentionally desaturated and at the same hue as the body
+ * palette so it never reads as status. Padding-left compensates
+ * by 3px so grouped and single rows keep identical content
+ * indentation; only the border itself is the visual difference.
  */
-function TimelineRow({ icon, ariaLabel, isFirst, action, highlighted, children }) {
+function TimelineRow({ icon, ariaLabel, isFirst, isGrouped, action, highlighted, children }) {
     // Class flag: rows that carry an action get hover-affordance
     // styling via the page-level `<style>` block. Rows without an
     // action skip the class and stay visually quiet on hover.
@@ -301,8 +311,21 @@ function TimelineRow({ icon, ariaLabel, isFirst, action, highlighted, children }
                 display: 'flex',
                 alignItems: 'flex-start',
                 gap: 10,
-                padding: '10px 14px',
+                // Compensate left padding by 3px when the border is
+                // present so the icon column lands at the same x
+                // coordinate regardless of grouping. Top/right/bottom
+                // padding stays constant; only left varies.
+                padding: isGrouped ? '10px 14px 10px 11px' : '10px 14px',
                 borderTop: isFirst ? 'none' : '1px solid #e3e6eb',
+                // Subtle structural accent for grouped rows. Same
+                // hue family as the body neutral (#3a4654) but at
+                // 8% opacity — visible enough to chunk groups apart
+                // when scanning, quiet enough to never read as
+                // status or signal. No status-coloured variants;
+                // grouping is structural, not semantic.
+                borderLeft: isGrouped
+                    ? '3px solid rgba(58, 70, 84, 0.08)'
+                    : undefined,
                 fontSize: 13,
                 // Inline backgroundColor only when highlighted — this
                 // is intentional. Setting `transparent` inline would
@@ -626,6 +649,7 @@ function renderGroup(
             icon={decor.icon}
             ariaLabel="attendance"
             isFirst={isFirst}
+            isGrouped
             action={primaryAction}
             highlighted={recentlyUpdatedKey === newest.ts}
         >
