@@ -245,6 +245,38 @@ export function validateSlot(slot, meta) {
 }
 
 /**
+ * Combine validation results from a lifetime slot and a recent slot
+ * into a single verdict, prefixing each issue with its source so the
+ * panel's tooltip can show exactly which slot failed.
+ *
+ * Why this exists as a separate function:
+ *   * The panel was previously only validating lifetime, which left
+ *     transient corruption in the recent window invisible (a race
+ *     condition under spam clicks could show up in recent metrics
+ *     and influence hints, but never trigger a warning).
+ *   * Mixing the two issue lists without prefixes would be
+ *     ambiguous when a single counter goes wrong in only one slot.
+ *   * Keeping it a pure function (rather than inlining in the panel)
+ *     makes the combination logic testable without rendering React.
+ *
+ * @param {object|null|undefined} lifetime
+ * @param {object|null|undefined} recent
+ * @param {object|null|undefined} meta
+ * @returns {{ valid: boolean, issues: string[] }}
+ */
+export function validateRowSlots(lifetime, recent, meta) {
+    const l = validateSlot(lifetime, meta)
+    const r = validateSlot(recent,   meta)
+    return {
+        valid: l.valid && r.valid,
+        issues: [
+            ...l.issues.map(s => `lifetime: ${s}`),
+            ...r.issues.map(s => `recent: ${s}`),
+        ],
+    }
+}
+
+/**
  * Lazily initialise the metrics aggregate on globalThis. Lazy so
  * the module import doesn't pollute the global scope until the
  * first action fires.

@@ -14,6 +14,7 @@ import {
     getActionMeta,
     shouldHintConfirmRemoval,
     validateSlot,
+    validateRowSlots,
     getRecentSlot,
     buildSessionSnapshot,
 } from './timelineTelemetry.js'
@@ -278,6 +279,55 @@ test('validateSlot — meta missing defaults to requiresConfirm=true', () => {
     )
     assert.equal(r.valid, false)
     assert.ok(r.issues.some(s => s.includes('click') && s.includes('confirm')))
+})
+
+// ── validateRowSlots — lifetime + recent combined verdict ──────────────────
+//
+// The panel needs ONE call to learn whether a row should show the warning
+// glyph. Combining lifetime + recent here (rather than at the panel call
+// site) keeps the prefix-formatting logic testable.
+
+test('validateRowSlots — both valid → valid + empty issues', () => {
+    const lifetime = { ...ZERO_COUNTS, click: 5, confirm: 5, success: 5, error: 0 }
+    const recent   = { ...ZERO_COUNTS, click: 2, confirm: 2, success: 2, error: 0 }
+    const r = validateRowSlots(lifetime, recent, META_REQUIRES_CONFIRM)
+    assert.equal(r.valid, true)
+    assert.deepEqual(r.issues, [])
+})
+
+test('validateRowSlots — only LIFETIME invalid → issues prefixed "lifetime:"', () => {
+    const lifetime = { ...ZERO_COUNTS, click: 2, confirm: 3, success: 0, error: 0 }  // click<confirm
+    const recent   = { ...ZERO_COUNTS, click: 5, confirm: 5, success: 5, error: 0 }
+    const r = validateRowSlots(lifetime, recent, META_REQUIRES_CONFIRM)
+    assert.equal(r.valid, false)
+    assert.ok(r.issues.length >= 1)
+    assert.ok(r.issues.every(s => s.startsWith('lifetime:')))
+})
+
+test('validateRowSlots — only RECENT invalid → issues prefixed "recent:"', () => {
+    const lifetime = { ...ZERO_COUNTS, click: 5, confirm: 5, success: 5, error: 0 }
+    const recent   = { ...ZERO_COUNTS, click: 5, confirm: 2, success: 2, error: 1 }  // confirm<succ+err
+    const r = validateRowSlots(lifetime, recent, META_REQUIRES_CONFIRM)
+    assert.equal(r.valid, false)
+    assert.ok(r.issues.length >= 1)
+    assert.ok(r.issues.every(s => s.startsWith('recent:')))
+})
+
+test('validateRowSlots — both invalid → issues from each, prefixed', () => {
+    const lifetime = { ...ZERO_COUNTS, click: 2, confirm: 3, success: 0, error: 0 }
+    const recent   = { ...ZERO_COUNTS, click: 5, confirm: 2, success: 2, error: 1 }
+    const r = validateRowSlots(lifetime, recent, META_REQUIRES_CONFIRM)
+    assert.equal(r.valid, false)
+    assert.ok(r.issues.some(s => s.startsWith('lifetime:')))
+    assert.ok(r.issues.some(s => s.startsWith('recent:')))
+    // Lifetime-prefixed issues come first (left-to-right narrative).
+    assert.ok(r.issues[0].startsWith('lifetime:'))
+})
+
+test('validateRowSlots — null slots are valid (no data, no warning)', () => {
+    const r = validateRowSlots(null, null, META_REQUIRES_CONFIRM)
+    assert.equal(r.valid, true)
+    assert.deepEqual(r.issues, [])
 })
 
 // ── getRecentSlot — sliding window aggregation ─────────────────────────────

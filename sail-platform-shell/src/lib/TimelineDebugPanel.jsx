@@ -23,7 +23,7 @@ import { useEffect, useState } from 'react'
 import {
     getActionMeta,
     shouldHintConfirmRemoval,
-    validateSlot,
+    validateRowSlots,
     getRecentSlot,
     buildSessionSnapshot,
 } from './timelineTelemetry'
@@ -128,17 +128,35 @@ export default function TimelineDebugPanel() {
     const byAction = metrics?.byAction || {}
     const recentErrors = (metrics?.recentErrors || []).slice(-RECENT_ERROR_LIMIT)
 
-    // Validate every slot once per render. Per-row warnings + the
-    // global integrity indicator both read from this map. Slots
-    // with no data return { valid: true, issues: [] } — empty rows
-    // never trigger the indicator.
-    const validations = {}
+    // Per-action precompute once per render. Each row needs:
+    //   * a recent slot for the recent-counts line and the
+    //     friction-hint data source.
+    //   * a combined validation (lifetime + recent) for the
+    //     warning glyph.
+    // Computing both at the top means the row map below reads
+    // them from the precomputed map without repeating the
+    // getRecentSlot iteration.
+    //
+    // Recent matters for validation now because it drives the
+    // friction hint — a transient corruption in the recent window
+    // (race conditions under spam clicks, partial updates during
+    // async flows) would otherwise be invisible while still
+    // influencing decisions. Each issue is prefixed `lifetime:` or
+    // `recent:` by validateRowSlots so the tooltip pinpoints which
+    // slot failed which invariant.
+    const rowState = {}
     for (const { key } of ACTION_LABELS) {
-        const slot = byAction[key]
-        if (slot) {
-            validations[key] = validateSlot(slot, getActionMeta(key))
+        const lifetime = byAction[key]
+        if (!lifetime) continue
+        const recent = getRecentSlot(key, RECENT_WINDOW_MS)
+        rowState[key] = {
+            recent,
+            validation: validateRowSlots(lifetime, recent, getActionMeta(key)),
         }
     }
+    const validations = Object.fromEntries(
+        Object.entries(rowState).map(([k, v]) => [k, v.validation]),
+    )
     const anyInvalid = Object.values(validations).some(v => !v.valid)
 
     const handleReset = () => {
@@ -363,15 +381,17 @@ export default function TimelineDebugPanel() {
                         const countsTitle = requiresConfirm
                             ? 'click / confirm / success / error'
                             : 'click / success / error  (single-click action — no confirm step)'
-                        // Recent-window slot. Same shape as the
-                        // lifetime slot but only counting events
-                        // from the last RECENT_WINDOW_MS milliseconds.
-                        // Lifetime answers "what has happened since the
-                        // page loaded?"; recent answers "is this still
-                        // true right now?". Big divergence between the
-                        // two reveals trends the lifetime average
-                        // smooths over.
-                        const recent = getRecentSlot(key, RECENT_WINDOW_MS)
+                        // Recent-window slot — precomputed at the top
+                        // of the render and reused here. Same shape
+                        // as the lifetime slot but only counting
+                        // events from the last RECENT_WINDOW_MS
+                        // milliseconds. Lifetime answers "what has
+                        // happened since the page loaded?"; recent
+                        // answers "is this still true right now?".
+                        // Big divergence between the two reveals
+                        // trends the lifetime average smooths over.
+                        const recent = rowState[key]?.recent
+                            ?? { click: 0, confirm: 0, success: 0, error: 0 }
                         const hasRecentActivity =
                             recent.click + recent.confirm + recent.success + recent.error > 0
                         const recentCounts = requiresConfirm
