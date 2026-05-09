@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import { getStudentTimeline } from '../services/timeline'
 import { markAttendancePresent } from '../services/attendance'
 import { resolveBehaviourEvent } from '../services/behaviour'
+import { resolvePrimaryAction } from '../lib/resolvePrimaryAction'
 
 /**
  * /schools/:schoolId/students/:studentId/timeline — Phase D
@@ -491,52 +492,22 @@ function renderSingle(
         actorLabelFor(e),
         formatTimestamp(e.ts),
     ].filter(Boolean).join(' · ')
-    // ── Primary action resolution ──────────────────────────────
-    //
-    // PRODUCT RULE: at most ONE primary action per row (same
-    // rule as renderGroup). New action types for single events
-    // — for any event type, attendance/behaviour/assignment_*
-    // — must be added as `else if` branches in this ladder, not
-    // as parallel `if`s. First matching branch wins.
-    //
-    // Behaviour "Resolve" gets the FULL interaction cascade
-    // (marking > confirming > default), same as attendance
-    // mark-present. State slots (markingKey/confirmingKey) are
-    // shared across action types — each slot is keyed by row
-    // anchor, so only one row can be in any given state at a
-    // time, regardless of which action type drives it.
-    let primaryAction = null
-    if (e.type === 'behaviour'
-        && String(e.meta?.status ?? '').toLowerCase() === 'open'
-        && typeof onResolveBehaviour === 'function') {
-        const isMarking    = markingKey    === e.ts
-        const isConfirming = !isMarking && confirmingKey === e.ts
-        let label
-        if (isMarking)         label = 'Resolving…'
-        else if (isConfirming) label = 'Confirm'
-        else                   label = 'Resolve'
-        primaryAction = {
-            label,
-            disabled: isMarking,
-            variant:  isConfirming ? 'confirming' : 'default',
-            onClick: () => onResolveBehaviour({
-                eventId:    e.meta?.event_id ?? null,
-                eventTs:    e.ts,
-                eventTitle: e.title,
-                classId:    e.meta?.class_id    ?? null,
-                className:  e.meta?.class_name  ?? null,
-                note:       e.meta?.note        ?? null,
-            }),
-        }
-    }
-    // else if (e.type === 'assignment_assigned' && ...) {
-    //     primaryAction = { label: 'View assignment', ... }
-    // }
-    // else if (e.type === 'attendance' && ...) {
-    //     // (attendance singles are length-1 runs that didn't
-    //     // form a group — they currently don't get an action,
-    //     // but a future quick-action could be added here.)
-    // }
+    // Primary action resolution is delegated to `resolvePrimaryAction` —
+    // the single decision point that enforces "one primary action per
+    // row" structurally and emits a dev warn if branches ever overlap.
+    // To add a new action type for a row kind, edit the resolver, not
+    // this call site.
+    const primaryAction = resolvePrimaryAction(
+        {
+            kind:  'single',
+            type:  e.type,
+            key:   e.ts,
+            title: e.title,
+            meta:  e.meta,
+        },
+        { markingKey, confirmingKey },
+        { onResolveBehaviour },
+    )
     return (
         <TimelineRow
             key={`single-${e.type}-${e.ts}-${i}`}
@@ -630,61 +601,22 @@ function renderGroup(
         formatTimestamp(newest.ts),
     ].filter(Boolean).join(' · ')
 
-    // ── Primary action resolution ──────────────────────────────
-    //
-    // PRODUCT RULE: at most ONE primary action per row. Cluttered
-    // rows defeat the discoverability work the system has put in;
-    // a row that affords one obvious next step beats a row that
-    // affords four equal-weight options.
-    //
-    // STRUCTURAL ENFORCEMENT: action candidates resolve via a
-    // mutually-exclusive `if / else if` ladder. New action types
-    // for grouped attendance rows must be added as `else if`
-    // branches — never as parallel independent `if`s, never as
-    // an array, never combined. The first matching branch wins;
-    // ordering reflects priority.
-    //
-    // Within a single action's render path (e.g. mark-present),
-    // the state cascade (marking > confirming > default) is
-    // internal to that branch — it's a label/style cascade, not
-    // multiple actions.
-    //
-    // Context payload is intentionally lean — just enough that the
-    // RPC wrapper can scope the write without re-querying:
-    // `latestClassId` + `latestSessionDate` identify the session,
-    // `studentId` is closure-bound at page level.
-    const finalStatus = newest?.meta?.status
-    let primaryAction = null
-    if (typeof onMarkPresent === 'function'
-        && finalStatus
-        && String(finalStatus).toLowerCase() !== 'present') {
-        // Branch: mark-present. Internal label/style cascade
-        // (priority: marking > confirming > default) lives here,
-        // bound to this single action's render.
-        const isMarking    = markingKey    === newest.ts
-        const isConfirming = !isMarking && confirmingKey === newest.ts
-        let label
-        if (isMarking)         label = 'Marking…'
-        else if (isConfirming) label = 'Confirm'
-        else                   label = 'Mark present'
-        primaryAction = {
-            label,
-            disabled: isMarking,
-            variant:  isConfirming ? 'confirming' : 'default',
-            onClick: () => onMarkPresent({
-                runSize:           runDesc.length,
-                latestTs:          newest.ts,
-                latestStatus:      finalStatus,
-                latestClassId:     newest?.meta?.class_id ?? null,
-                latestClassName:   newest?.meta?.class_name ?? null,
-                latestSessionDate: newest?.meta?.session_date ?? null,
-                latestActorId:     newest?.meta?.actor_id ?? null,
-            }),
-        }
-    }
-    // else if (...future grouped-attendance action...) {
-    //     primaryAction = { ... }
-    // }
+    // Primary action resolution is delegated to `resolvePrimaryAction` —
+    // the single decision point that enforces "one primary action per
+    // row" structurally. This call site only assembles the row-shape
+    // input; the resolver owns the branch decisions, label cascade,
+    // and onClick wiring.
+    const primaryAction = resolvePrimaryAction(
+        {
+            kind:    'group',
+            type:    'attendance',
+            key:     newest.ts,
+            meta:    newest?.meta ?? {},
+            runSize: runDesc.length,
+        },
+        { markingKey, confirmingKey },
+        { onMarkPresent },
+    )
 
     return (
         <TimelineRow
