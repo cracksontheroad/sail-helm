@@ -785,6 +785,31 @@ export default function StudentTimelinePage() {
         // state takes over without a flash of "Mark present".
         setConfirmingKey(null)
         setMarkingKey(key)
+        // Pre-highlight (optimistic VISUAL only, not optimistic
+        // DATA). Anchors the green highlight on the same row the
+        // operator just clicked, so they get an immediate "we
+        // heard you" cue without waiting on the round-trip.
+        //
+        // What this is NOT:
+        //   * Not an optimistic data update — `events` is still
+        //     refetched from the server as the source of truth.
+        //   * Not a skip-refetch — every other code path stays
+        //     identical.
+        //
+        // What happens after the RPC returns:
+        //   * Success → the post-refetch logic below finds the
+        //     just-updated row (by class_id + session_date +
+        //     status='present') and re-anchors `recentlyUpdatedKey`
+        //     to its NEW ts. The cleanup-canceling effect on
+        //     `recentlyUpdatedKey` cancels the pre-highlight timer
+        //     and starts a fresh 2.5s window from the post-refetch
+        //     moment. The transition is visually seamless because
+        //     React batches both state updates into one render.
+        //   * Failure → no re-anchor happens; the pre-highlight's
+        //     timer fires after 2.5s and clears naturally. No
+        //     stale highlight, no inconsistency, no manual
+        //     rollback path.
+        setRecentlyUpdatedKey(key)
         try {
             await markAttendancePresent({
                 studentId,
