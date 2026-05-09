@@ -146,8 +146,9 @@ export function getActionMeta(action) {
  * @param {{click,confirm,success,error}|null|undefined} slot
  * @returns {boolean}
  */
-export const MIN_HINT_CLICKS = 5
-export const MAX_ERROR_RATE  = 0.05   // 5%
+export const MIN_HINT_CLICKS  = 5
+export const MAX_ERROR_RATE   = 0.05   // 5%
+export const MIN_SUCCESS_RATE = 0.95   // 95%
 
 export function shouldHintConfirmRemoval(slot, opts = {}) {
     if (!slot) return false
@@ -159,19 +160,19 @@ export function shouldHintConfirmRemoval(slot, opts = {}) {
     const confirm = slot.confirm ?? 0
     const success = slot.success ?? 0
     const error   = slot.error   ?? 0
-    // The error-rate threshold is the only parameter callers can
-    // override — used by the sweep mode of the simulation CLI to
-    // explore parameter sensitivity without editing source. The
-    // other gates are deliberately fixed; if you need to sweep
-    // them, that's a separate slice. Default mirrors the exported
-    // MAX_ERROR_RATE so production callers (panel) and tests
-    // continue working unchanged.
-    const maxErrorRate = opts.maxErrorRate ?? MAX_ERROR_RATE
+    // Two parameters can be overridden — used by the sweep mode of
+    // the simulation CLI to explore the 2D decision surface without
+    // editing source. Defaults mirror the exported constants so
+    // production callers (panel) and existing tests continue
+    // working unchanged. The volume + ratio-safety gates stay
+    // fixed; if those ever need exploration, that's another slice.
+    const maxErrorRate   = opts.maxErrorRate   ?? MAX_ERROR_RATE
+    const minSuccessRate = opts.minSuccessRate ?? MIN_SUCCESS_RATE
     if (click   < MIN_HINT_CLICKS) return false
     if (confirm < 1)               return false   // ratio safety
     const errorRate = error / confirm
     if (errorRate > maxErrorRate) return false
-    return (success / confirm) >= 0.95
+    return (success / confirm) >= minSuccessRate
 }
 
 // ── Self-verification ─────────────────────────────────────────────────────

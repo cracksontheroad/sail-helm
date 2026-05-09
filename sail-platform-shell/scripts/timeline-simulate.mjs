@@ -53,6 +53,7 @@ import {
     TIMELINE_ACTIONS,
     TIMELINE_PHASES,
     MAX_ERROR_RATE,
+    MIN_SUCCESS_RATE,
 } from '../src/lib/timelineTelemetry.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -290,27 +291,27 @@ function runOne(name, prevSignal = null) {
     return signal
 }
 
-// ── Sweep mode ────────────────────────────────────────────────────────────
+// ── Sweep mode (2D: success threshold × error threshold) ─────────────────
 //
-// Run a scenario across a range of MAX_ERROR_RATE thresholds and print
-// the verdict + blocking-gate diagnosis at each threshold. Surfaces the
-// flip point (the smallest threshold where the hint goes ON) so a dev
-// can SEE the decision boundary instead of guessing where it lands.
+// Iterates over both `minSuccessRate` AND `maxErrorRate` to map the
+// decision surface, not just one axis. Surfaces flip points per
+// success-threshold band — and where there's no flip, names the
+// binding gate so the dev can see WHICH lever to pull next.
 //
-// The 'binding constraint' diagnosis matters more than the flip itself:
-// when the success-rate gate (95%, fixed) is binding above the error-
-// rate gate, no amount of error-threshold tuning will surface the hint.
-// The sweep makes that visible — instead of the dev concluding "the
-// hint is broken" they see "this scenario fails the success gate
-// regardless".
+// The 1D sweep was useful but stalled: in the existing scenarios
+// (low-error, mixed-outcome) the success-rate gate dominates the
+// error-rate gate at higher error thresholds, so error-axis tuning
+// alone never flips the verdict. The 2D sweep exposes that hierarchy
+// directly — same data, two axes, full picture.
 
-const SWEEP_THRESHOLDS = [0, 0.02, 0.05, 0.10, 0.15, 0.20]
+const ERROR_SWEEP_THRESHOLDS   = [0, 0.02, 0.05, 0.10, 0.15, 0.20]
+const SUCCESS_SWEEP_THRESHOLDS = [0.90, 0.92, 0.95, 0.98]
 
 // Re-implements the gate-evaluation order from
 // timelineTelemetry.shouldHintConfirmRemoval so the sweep can name
-// WHICH gate is blocking at each threshold. Stays in sync via the
-// node:test boundary tests on each gate.
-function describeGateAt(slot, threshold) {
+// WHICH gate is blocking at each (errorRate, successRate) pair.
+// Stays in sync via the node:test boundary tests on each gate.
+function describeGateAt(slot, errThreshold, succThreshold) {
     const click   = slot.click   ?? 0
     const confirm = slot.confirm ?? 0
     const success = slot.success ?? 0
@@ -318,14 +319,41 @@ function describeGateAt(slot, threshold) {
     if (click   < 5)  return `click ${click} < 5 (volume)`
     if (confirm < 1)  return 'confirm = 0 (ratio safety)'
     const errorRate = error / confirm
-    if (errorRate > threshold) {
-        return `error ${(errorRate * 100).toFixed(1)}% > ${(threshold * 100).toFixed(1)}% threshold`
+    if (errorRate > errThreshold) {
+        return `error ${(errorRate * 100).toFixed(1)}% > ${(errThreshold * 100).toFixed(1)}%`
     }
     const successRate = success / confirm
-    if (successRate < 0.95) {
-        return `success ${(successRate * 100).toFixed(1)}% < 95.0% threshold`
+    if (successRate < succThreshold) {
+        return `success ${(successRate * 100).toFixed(1)}% < ${(succThreshold * 100).toFixed(1)}%`
     }
     return 'all gates pass'
+}
+
+function runErrorSweepRow(slot, succThreshold, errThresholds) {
+    return errThresholds.map(t => ({
+        errThreshold: t,
+        hint: shouldHintConfirmRemoval(slot, {
+            maxErrorRate:   t,
+            minSuccessRate: succThreshold,
+        }),
+        reason: null,
+    })).map(v => ({
+        ...v,
+        reason: v.hint ? 'all gates pass' : describeGateAt(slot, v.errThreshold, succThreshold),
+    }))
+}
+
+function describeFlip(verdicts, succThreshold) {
+    const firstOnIdx = verdicts.findIndex(v => v.hint)
+    if (firstOnIdx === -1) {
+        const loosest = verdicts[verdicts.length - 1]
+        return `no flip — binding at error ${(loosest.errThreshold * 100).toFixed(1)}%: ${loosest.reason}`
+    }
+    if (firstOnIdx === 0) {
+        return `no flip — already ON at error 0%`
+    }
+    const flipT = verdicts[firstOnIdx].errThreshold
+    return `flip at error ${(flipT * 100).toFixed(1)}%`
 }
 
 function runSweep(name) {
@@ -343,46 +371,46 @@ function runSweep(name) {
     const successPct = slot.confirm > 0 ? (slot.success / slot.confirm) * 100 : 0
     const errorPct   = slot.confirm > 0 ? (slot.error   / slot.confirm) * 100 : 0
 
-    console.log(`\n=== SWEEP — ${name}  (${def.description}) ===`)
+    console.log(`\n=== SWEEP (2D) — ${name}  (${def.description}) ===`)
     console.log(`  recent: ${slot.click}c ${slot.confirm}f ${slot.success}s ${slot.error}e`
         + ` (success ${successPct.toFixed(1)}%, error ${errorPct.toFixed(1)}%)`)
-    console.log('')
-    console.log('  threshold   hint   reason')
-    console.log('  ─────────   ────   ──────────────────────────────────────────')
 
-    const verdicts = SWEEP_THRESHOLDS.map(t => ({
-        threshold: t,
-        hint:      shouldHintConfirmRemoval(slot, { maxErrorRate: t }),
-        reason:    null,   // filled below
-    }))
-    for (const v of verdicts) {
-        v.reason = v.hint ? 'all gates pass' : describeGateAt(slot, v.threshold)
-        const padded     = `${(v.threshold * 100).toFixed(1)}%`.padStart(7)
-        const hintStr    = v.hint ? 'ON ' : 'OFF'
-        const isDefault  = Math.abs(v.threshold - MAX_ERROR_RATE) < 1e-9
-        const defaultTag = isDefault ? '   ← current default' : ''
-        console.log(`  ${padded}     ${hintStr}    ${v.reason}${defaultTag}`)
+    const summaries = []
+    for (const succ of SUCCESS_SWEEP_THRESHOLDS) {
+        const isSuccDefault = Math.abs(succ - MIN_SUCCESS_RATE) < 1e-9
+        const succLabel = `${(succ * 100).toFixed(1)}%${isSuccDefault ? '  (default)' : ''}`
+        console.log(`\n  ── success threshold ≥ ${succLabel} ──`)
+        const verdicts = runErrorSweepRow(slot, succ, ERROR_SWEEP_THRESHOLDS)
+        for (const v of verdicts) {
+            const padded     = `${(v.errThreshold * 100).toFixed(1)}%`.padStart(7)
+            const hintStr    = v.hint ? 'ON ' : 'OFF'
+            const isErrDflt  = Math.abs(v.errThreshold - MAX_ERROR_RATE) < 1e-9
+            const dfltTag    = (isErrDflt && isSuccDefault) ? '   ← current defaults' : ''
+            console.log(`    ${padded}    ${hintStr}    ${v.reason}${dfltTag}`)
+        }
+        summaries.push({ succ, summary: describeFlip(verdicts, succ) })
+    }
+
+    console.log('')
+    console.log('  ── 2D summary ──')
+    for (const s of summaries) {
+        const isDefault = Math.abs(s.succ - MIN_SUCCESS_RATE) < 1e-9
+        const tag = isDefault ? '  (current default)' : ''
+        console.log(`    success ≥ ${(s.succ * 100).toFixed(1)}%${tag.padEnd(20)}: ${s.summary}`)
     }
     console.log('')
 
-    // Flip detection — the smallest tested threshold where the hint
-    // first goes ON (after being OFF). If always OFF or always ON, no
-    // flip in the tested range.
-    const firstOnIdx = verdicts.findIndex(v => v.hint)
-    if (firstOnIdx === -1) {
-        // Never ON — diagnose binding constraint at the loosest threshold.
-        const loosest = verdicts[verdicts.length - 1]
-        console.log(`  flip: NEVER (hint stays OFF across all tested thresholds)`)
-        console.log(`  binding constraint at ${(loosest.threshold * 100).toFixed(1)}% (loosest tested): ${loosest.reason}`)
-        console.log(`  → tuning MAX_ERROR_RATE alone won't surface the hint here.`)
-    } else if (firstOnIdx === 0) {
-        console.log(`  flip: NEVER (hint already ON at 0% — error rate is below any positive threshold)`)
+    // Highest-level diagnosis: does ANY combination flip the verdict?
+    // If yes, name the cheapest combination (lowest success threshold
+    // that produces a flip + the smallest error threshold at which it
+    // flips). If no, the action is genuinely outside the hint space —
+    // tuning either dimension alone won't help.
+    const anyOnAcrossAll = summaries.some(s => !s.summary.startsWith('no flip'))
+    if (anyOnAcrossAll) {
+        const firstFlippable = summaries.find(s => !s.summary.startsWith('no flip'))
+        console.log(`  → cheapest flip: relax success threshold to ${(firstFlippable.succ * 100).toFixed(1)}% (${firstFlippable.summary}).`)
     } else {
-        const flipT = verdicts[firstOnIdx].threshold
-        const prevT = verdicts[firstOnIdx - 1].threshold
-        console.log(`  flip: at ${(flipT * 100).toFixed(1)}% threshold`
-            + ` (OFF at ${(prevT * 100).toFixed(1)}% → ON at ${(flipT * 100).toFixed(1)}%)`)
-        console.log(`  → setting MAX_ERROR_RATE ≥ ${(flipT * 100).toFixed(1)}% in source would surface the hint here.`)
+        console.log(`  → no combination of (success, error) thresholds in tested range surfaces the hint.`)
     }
 }
 

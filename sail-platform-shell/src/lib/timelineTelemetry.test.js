@@ -155,6 +155,27 @@ test('hint — opts.maxErrorRate alone cannot flip when success rate is the bind
     assert.equal(shouldHintConfirmRemoval(slot, { maxErrorRate: 1.00 }), false)
 })
 
+test('hint — opts.minSuccessRate override applies (the second sweep axis)', () => {
+    // Same low-error slot. With both gates at default, both block.
+    // Lowering ONLY the success gate doesn't help — error gate still blocks.
+    // Lowering BOTH gates correctly flips to ON.
+    const slot = { click: 10, confirm: 10, success: 9, error: 1 }
+    assert.equal(shouldHintConfirmRemoval(slot),                                                false)  // both default → blocks
+    assert.equal(shouldHintConfirmRemoval(slot, { minSuccessRate: 0.90 }),                      false)  // success passes (90%≥90%) but error still blocks
+    assert.equal(shouldHintConfirmRemoval(slot, { minSuccessRate: 0.90, maxErrorRate: 0.10 }),  true)   // both pass → ON
+})
+
+test('hint — minSuccessRate boundary (success rate exactly at threshold)', () => {
+    // 19s + 1e in 20 cycles → success 95%, error 5%.
+    // At default minSuccessRate=0.95, success exact = 95% → passes.
+    // At override 0.96, fails (95% < 96%).
+    // At override 0.94, trivially passes.
+    const slot = { click: 20, confirm: 20, success: 19, error: 1 }
+    assert.equal(shouldHintConfirmRemoval(slot),                              true)   // 95%≥95% boundary
+    assert.equal(shouldHintConfirmRemoval(slot, { minSuccessRate: 0.96 }),    false)
+    assert.equal(shouldHintConfirmRemoval(slot, { minSuccessRate: 0.94 }),    true)
+})
+
 test('hint — success/confirm < 0.95 → false (rate threshold)', () => {
     // 4/5 = 0.8 → no hint
     assert.equal(shouldHintConfirmRemoval({ click: 5, confirm: 5, success: 4, error: 0 }), false)
