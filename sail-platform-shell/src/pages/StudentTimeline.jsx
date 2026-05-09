@@ -184,6 +184,36 @@ function actorLabelFor(event) {
 }
 
 /**
+ * Severity ordering for attendance status, used by the grouped-row
+ * trend indicator. Lower index = better; higher = worse. Statuses
+ * not in the map are treated as unranked → no trend arrow rendered
+ * (safer than guessing a position for unfamiliar values like
+ * "excused" if the schema ever adds one).
+ */
+const ATTENDANCE_SEVERITY = {
+    present: 0,
+    late:    1,
+    absent:  2,
+}
+
+/**
+ * Compare two attendance statuses (first → last) and return the
+ * trend arrow:
+ *   ↑ — final is more severe than first (worsened)
+ *   ↓ — final is less severe than first (improved)
+ *  null — equal, missing, or either is unranked
+ */
+function attendanceTrend(first, last) {
+    if (!first || !last) return null
+    const a = ATTENDANCE_SEVERITY[String(first).toLowerCase()]
+    const b = ATTENDANCE_SEVERITY[String(last).toLowerCase()]
+    if (a === undefined || b === undefined) return null
+    if (b > a) return '↑'
+    if (b < a) return '↓'
+    return null
+}
+
+/**
  * Shared row chrome — icon column + flex content column. Both
  * single and grouped renderers share this scaffold so the visual
  * rhythm of the list stays uniform; only the content column
@@ -259,7 +289,7 @@ function renderSingle(e, i, isFirst) {
  * Layout (intentionally one extra subtle line than singles, to
  * visually telegraph "this is a cluster, not a single event"):
  *   📋  Attendance (N updates)
- *       Now {final_status} (was {prev_status} [→ {prev_status} ...])[ — class]
+ *       Now {final_status} (was {prev_status} [→ ...])[ — class] [↑↓]
  *       by {newest_actor} · {newest_ts}
  *
  * Edge cases:
@@ -270,6 +300,13 @@ function renderSingle(e, i, isFirst) {
  *     bookkeeping. Previous statuses appear in chronological
  *     order (oldest → most recent prior) so the history reads
  *     left-to-right toward the current state.
+ *   * Trend arrow (↑ / ↓) is appended at the end of the status
+ *     line whenever the run involved a directional change in
+ *     attendance severity. Lets an operator scan the timeline
+ *     and see "stable / worsening / improving" without reading
+ *     the parenthetical. Severity ordering: present < late <
+ *     absent. Unknown statuses are unranked → no arrow rather
+ *     than guess.
  *   * Class context is appended only when uniform across the
  *     run; mixed classes (rare but possible across multiple
  *     periods in a day) drop the suffix to avoid implying one.
@@ -291,6 +328,13 @@ function renderGroup(runDesc, i, isFirst) {
     // if for some reason no previous statuses are recoverable —
     // shouldn't happen under the length≥2 group-formation guard,
     // but keeps the line non-empty either way.
+    //
+    // Trend arrow (↑/↓) appended at the end based on first vs last
+    // status rank in `ATTENDANCE_SEVERITY` (present < late < absent).
+    // Unknown statuses are unranked → no arrow. The trend reads
+    // "first→last", same chronological direction as the parenthetical
+    // history, so a worsening change always points up regardless of
+    // how many intermediate statuses sit in between.
     let statusLine = null
     if (statuses.length >= 1) {
         const final = statuses[statuses.length - 1]
@@ -298,6 +342,8 @@ function renderGroup(runDesc, i, isFirst) {
         statusLine = previous.length === 0
             ? `Now ${final}`
             : `Now ${final} (was ${previous.join(' → ')})`
+        const trend = attendanceTrend(statuses[0], final)
+        if (trend) statusLine = `${statusLine} ${trend}`
     }
     const classNames = new Set(
         runDesc.map(ev => ev?.meta?.class_name).filter(Boolean)
