@@ -150,15 +150,10 @@ test('assignment cascade — markingKey match → "Submitting…"', () => {
     assert.equal(action.disabled, true)
 })
 
-test('assignment cascade — confirmingKey match → "Confirm" + variant=confirming', () => {
-    const row = {
-        kind: 'single', type: 'assignment_assigned', key: 'sa-row-1',
-        meta: { status: 'assigned', student_assignment_id: 'sa1', assignment_id: 'a1' },
-    }
-    const action = resolvePrimaryAction(row, { markingKey: null, confirmingKey: 'sa-row-1' }, handlers)
-    assert.equal(action.label, 'Confirm')
-    assert.equal(action.variant, 'confirming')
-})
+// Note: an earlier "assignment cascade — confirmingKey match → 'Confirm'"
+// test was deleted when assignment moved to requiresConfirm=false. The
+// "assignment cascade — confirmingKey match is IGNORED" test below
+// covers the new (correct) behaviour for that input.
 
 test('assignment onClick → handler receives expected payload (studentAssignmentId is the action key)', () => {
     let captured = null
@@ -202,6 +197,53 @@ test('cross-domain isolation — attendance group does not match assignment bran
     }
     const action = resolvePrimaryAction(row, NO_STATE, handlers)
     assert.equal(action.label, 'Mark present')
+})
+
+// ── requiresConfirm (per-domain policy) ────────────────────────────────────
+
+test('attendance branch advertises requiresConfirm=true', () => {
+    const row = {
+        kind: 'group', type: 'attendance', key: 'k1', runSize: 2,
+        meta: { status: 'late', class_id: 'c1', session_date: '2026-05-09' },
+    }
+    const action = resolvePrimaryAction(row, NO_STATE, handlers)
+    assert.equal(action.requiresConfirm, true)
+})
+
+test('behaviour branch advertises requiresConfirm=true', () => {
+    const row = {
+        kind: 'single', type: 'behaviour', key: 'b1',
+        meta: { status: 'open', event_id: 'b1' },
+    }
+    const action = resolvePrimaryAction(row, NO_STATE, handlers)
+    assert.equal(action.requiresConfirm, true)
+})
+
+test('assignment branch advertises requiresConfirm=false (data-driven policy)', () => {
+    const row = {
+        kind: 'single', type: 'assignment_assigned', key: 'sa-row-1',
+        meta: { status: 'assigned', student_assignment_id: 'sa1', assignment_id: 'a1' },
+    }
+    const action = resolvePrimaryAction(row, NO_STATE, handlers)
+    assert.equal(action.requiresConfirm, false)
+})
+
+test('assignment cascade — confirmingKey match is IGNORED (no "Confirm" label)', () => {
+    // Defensive: even if confirmingKey somehow matches this row's key
+    // (it shouldn't, since the handler never sets it for this domain),
+    // the resolver suppresses the confirming branch for actions whose
+    // policy is requiresConfirm=false.
+    const row = {
+        kind: 'single', type: 'assignment_assigned', key: 'sa-row-1',
+        meta: { status: 'assigned', student_assignment_id: 'sa1', assignment_id: 'a1' },
+    }
+    const action = resolvePrimaryAction(
+        row,
+        { markingKey: null, confirmingKey: 'sa-row-1' },
+        handlers,
+    )
+    assert.equal(action.label, 'Mark submitted')   // NOT 'Confirm'
+    assert.equal(action.variant, 'default')
 })
 
 // ── State cascade (marking > confirming > default) ─────────────────────────

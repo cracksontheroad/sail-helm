@@ -50,7 +50,24 @@
  *   onClick: Function,
  *   disabled: boolean,
  *   variant: 'default' | 'confirming',
+ *   requiresConfirm: boolean,
  * }}
+ *
+ * `requiresConfirm` declares the action's *policy*, not its current
+ * state:
+ *   * true   — the page-level handler runs the two-click arm/execute
+ *              flow. Cascade labels: idle → confirming → marking.
+ *   * false  — the page-level handler executes immediately on first
+ *              click. Cascade labels: idle → marking (no
+ *              "Confirm" intermediate). Per the data-driven policy
+ *              decision: assignment submission is non-destructive
+ *              and reversible, so the confirm step is friction
+ *              without safety value.
+ *
+ * The flag is exposed on the action object (rather than buried in
+ * the handler) so it's testable, declarative, and one place to
+ * change the policy per domain. Handlers still own their own RPC
+ * + matching, but their arming logic is gated on this flag.
  */
 export function resolvePrimaryAction(row, state, handlers) {
     if (!row) return null
@@ -113,9 +130,18 @@ export function resolvePrimaryAction(row, state, handlers) {
 // preserves "the resolver is a single function" from the call-site's
 // perspective.
 
-function cascadeLabel({ markingKey, confirmingKey, key, marking, confirming, idle }) {
-    const isMarking    = markingKey    === key
-    const isConfirming = !isMarking && confirmingKey === key
+function cascadeLabel({
+    markingKey, confirmingKey, key,
+    marking, confirming, idle,
+    requiresConfirm = true,
+}) {
+    const isMarking    = markingKey === key
+    // When the action skips the confirm step, the confirming branch
+    // is unreachable by design — `confirmingKey` will never be set
+    // to this row's key by the handler. Gating the branch here is
+    // defensive: even if some other code path set the key, we never
+    // flash "Confirm" on an action that doesn't have a confirm step.
+    const isConfirming = !isMarking && requiresConfirm && confirmingKey === key
     const label = isMarking ? marking : (isConfirming ? confirming : idle)
     return {
         label,
@@ -125,6 +151,9 @@ function cascadeLabel({ markingKey, confirmingKey, key, marking, confirming, idl
 }
 
 function buildMarkPresentAction(row, state, onMarkPresent) {
+    // Attendance correction is destructive (overwrites a recorded
+    // status). Two-click confirm stays as a safety net.
+    const requiresConfirm = true
     const { label, disabled, variant } = cascadeLabel({
         markingKey:    state.markingKey,
         confirmingKey: state.confirmingKey,
@@ -132,12 +161,14 @@ function buildMarkPresentAction(row, state, onMarkPresent) {
         marking:       'Marking…',
         confirming:    'Confirm',
         idle:          'Mark present',
+        requiresConfirm,
     })
     return {
         key: row.key,
         label,
         disabled,
         variant,
+        requiresConfirm,
         onClick: () => onMarkPresent({
             runSize:           row.runSize ?? 0,
             latestTs:          row.key,
@@ -151,19 +182,26 @@ function buildMarkPresentAction(row, state, onMarkPresent) {
 }
 
 function buildMarkAssignmentSubmittedAction(row, state, onMarkAssignmentSubmitted) {
+    // Assignment submission is non-destructive (acknowledgement,
+    // not state correction) and reversible via Assignments page /
+    // admin. Per the data-driven policy decision: skip the confirm
+    // step. Friction without safety value.
+    const requiresConfirm = false
     const { label, disabled, variant } = cascadeLabel({
         markingKey:    state.markingKey,
         confirmingKey: state.confirmingKey,
         key:           row.key,
         marking:       'Submitting…',
-        confirming:    'Confirm',
+        confirming:    'Confirm',   // unreachable when requiresConfirm=false
         idle:          'Mark submitted',
+        requiresConfirm,
     })
     return {
         key: row.key,
         label,
         disabled,
         variant,
+        requiresConfirm,
         onClick: () => onMarkAssignmentSubmitted({
             studentAssignmentId: row.meta?.student_assignment_id ?? null,
             assignmentId:        row.meta?.assignment_id        ?? null,
@@ -175,6 +213,10 @@ function buildMarkAssignmentSubmittedAction(row, state, onMarkAssignmentSubmitte
 }
 
 function buildResolveBehaviourAction(row, state, onResolveBehaviour) {
+    // Behaviour resolution closes a workflow item. Two-click confirm
+    // stays as a safety net for now — once telemetry shows steady
+    // success and rare reversals, this can revisit.
+    const requiresConfirm = true
     const { label, disabled, variant } = cascadeLabel({
         markingKey:    state.markingKey,
         confirmingKey: state.confirmingKey,
@@ -182,12 +224,14 @@ function buildResolveBehaviourAction(row, state, onResolveBehaviour) {
         marking:       'Resolving…',
         confirming:    'Confirm',
         idle:          'Resolve',
+        requiresConfirm,
     })
     return {
         key: row.key,
         label,
         disabled,
         variant,
+        requiresConfirm,
         onClick: () => onResolveBehaviour({
             eventId:    row.meta?.event_id ?? null,
             eventTs:    row.key,

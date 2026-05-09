@@ -793,6 +793,21 @@ export default function StudentTimelinePage() {
     // audit surface tag in that RPC defaults to 'helm.assignments';
     // attribution from the timeline is captured via the semantic
     // 'submission.received' event regardless of surface.
+    // SINGLE-CLICK FLOW (no confirm step) — assignment submission
+    // is non-destructive and reversible, so the resolver advertises
+    // `requiresConfirm: false` for this branch. The handler honours
+    // that policy by executing immediately on first click and never
+    // emitting a 'confirm' phase to telemetry. The panel will show
+    // confirm=0 for this action by design — that is the expected
+    // shape of the funnel for a single-click action, not a bug.
+    //
+    // Other handlers (onMarkPresent, onResolveBehaviour) keep the
+    // two-click flow because their resolver branches advertise
+    // `requiresConfirm: true`. Each handler hardcodes its own
+    // arming policy because each domain owns its own RPC + match
+    // logic; the resolver's `requiresConfirm` field is the
+    // declarative contract that documents the policy for tests
+    // and (future) UI introspection.
     const onMarkAssignmentSubmitted = async (context) => {
         if (markingKey) return
         if (!context?.studentAssignmentId) {
@@ -801,23 +816,13 @@ export default function StudentTimelinePage() {
             return
         }
         const key = context.eventTs
-        if (confirmingKey !== key) {
-            logTimelineAction({
-                action:  TIMELINE_ACTIONS.MARK_ASSIGNMENT,
-                phase:   TIMELINE_PHASES.CLICK,
-                rowType: 'assignment_assigned',
-                rowKey:  key,
-            })
-            setConfirmingKey(key)
-            return
-        }
+        // Click → execute. No arm step, no confirm phase emitted.
         logTimelineAction({
             action:  TIMELINE_ACTIONS.MARK_ASSIGNMENT,
-            phase:   TIMELINE_PHASES.CONFIRM,
+            phase:   TIMELINE_PHASES.CLICK,
             rowType: 'assignment_assigned',
             rowKey:  key,
         })
-        setConfirmingKey(null)
         setMarkingKey(key)
         setRecentlyUpdatedKey(key)
         const start = performance.now()
