@@ -391,19 +391,46 @@ function SubtleLine({ children }) {
     )
 }
 
-function renderSingle(e, i, isFirst, recentlyUpdatedKey) {
+function renderSingle(e, i, isFirst, recentlyUpdatedKey, onAddBehaviourNote) {
     const decor = TYPE_DECORATION[e.type] || { icon: '·', color: '#5b6877' }
     const subline = [
         eventSubtext(e),
         actorLabelFor(e),
         formatTimestamp(e.ts),
     ].filter(Boolean).join(' · ')
+    // Action affordance — currently scoped to behaviour events
+    // only. Probe action: clicking logs context, no backend write.
+    // Deliberately spartan vs the attendance flow:
+    //   * no two-click confirmation (annotation is non-destructive,
+    //     so accidental clicks are cheap),
+    //   * no highlight (no state change to confirm),
+    //   * no disabled/marking variant (no async work yet).
+    // The behaviour row inherits hover affordance from the same
+    // TimelineRow contract: button at 0.65 opacity at rest, 1.0
+    // on row hover, neutral-gray hover background.
+    let action = null
+    if (e.type === 'behaviour' && typeof onAddBehaviourNote === 'function') {
+        action = {
+            label: 'Add note',
+            onClick: () => onAddBehaviourNote({
+                type:        'behaviour',
+                eventTs:     e.ts,
+                eventTitle:  e.title,
+                classId:     e.meta?.class_id    ?? null,
+                className:   e.meta?.class_name  ?? null,
+                note:        e.meta?.note        ?? null,
+                actorId:     e.meta?.actor_id    ?? null,
+                actorName:   e.meta?.actor_name  ?? null,
+            }),
+        }
+    }
     return (
         <TimelineRow
             key={`single-${e.type}-${e.ts}-${i}`}
             icon={decor.icon}
             ariaLabel={e.type}
             isFirst={isFirst}
+            action={action}
             highlighted={recentlyUpdatedKey === e.ts}
         >
             <div style={{ fontWeight: 500, color: decor.color }}>{e.title}</div>
@@ -682,6 +709,32 @@ export default function StudentTimelinePage() {
     // update of `events`. The grouping logic, trend arrow, etc.
     // all derive from `events`, and refetching avoids the trap of
     // hand-editing one event in the middle of a sorted UNION.
+    // Placeholder action handler for behaviour rows — proves that
+    // the action contract generalises beyond attendance. Currently
+    // logs only; no confirmation, no highlight, no backend wiring.
+    //
+    // Why a probe: every system that exercises only one action path
+    // tends to bake in hidden coupling. By adding a second, distinct
+    // action type now (different domain, different intent — annotation
+    // not state-correction) we surface any rigidity in the contract
+    // before it becomes load-bearing. If this feels awkward to wire,
+    // the contract has a flaw we can fix cheaply; if it feels
+    // boring, the contract is real.
+    //
+    // Context payload mirrors `onMarkPresent` shape — `studentId` /
+    // `schoolId` from page closure, plus an `eventTs` anchor and the
+    // domain-specific meta. A future real "add note" workflow can
+    // use these to identify the parent behaviour event without re-
+    // querying.
+    const onAddBehaviourNote = (context) => {
+        // eslint-disable-next-line no-console
+        console.log('[Timeline] Add note (placeholder — no backend wired yet)', {
+            studentId,
+            schoolId,
+            ...context,
+        })
+    }
+
     const onMarkPresent = async (context) => {
         if (markingKey) return                        // already marking another row
         if (!context?.latestClassId || !context?.latestSessionDate) {
@@ -796,7 +849,10 @@ export default function StudentTimelinePage() {
                                 onMarkPresent, markingKey, recentlyUpdatedKey, confirmingKey,
                             )
                         }
-                        return renderSingle(item.event, i, isFirst, recentlyUpdatedKey)
+                        return renderSingle(
+                            item.event, i, isFirst,
+                            recentlyUpdatedKey, onAddBehaviourNote,
+                        )
                     })}
                 </div>
             )}
