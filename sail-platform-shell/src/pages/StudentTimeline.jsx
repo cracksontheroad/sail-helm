@@ -214,12 +214,24 @@ function attendanceTrend(first, last) {
 }
 
 /**
- * Shared row chrome — icon column + flex content column. Both
- * single and grouped renderers share this scaffold so the visual
- * rhythm of the list stays uniform; only the content column
- * varies between the two.
+ * Shared row chrome — icon column + flex content column +
+ * optional right-aligned action slot. Both single and grouped
+ * renderers share this scaffold so the visual rhythm of the
+ * list stays uniform; only the content column and the presence
+ * of the action vary between the two.
+ *
+ * `action` (optional) shape: `{ label: string, onClick: fn }`.
+ *   * Renders as a small button on the right side of the row.
+ *   * Omitted entirely when null/undefined — no empty slot.
+ *   * Click handling and any side-effects belong to the caller.
+ *     This component only handles presentation.
+ *   * Designed as the foundation for "action from context" — a
+ *     row can offer one obvious next step. Multi-action rows or
+ *     menus are explicitly out of scope here; if that's ever
+ *     needed, replace `action` with `actions: []` and grow the
+ *     slot, but defer until there's real demand.
  */
-function TimelineRow({ icon, ariaLabel, isFirst, children }) {
+function TimelineRow({ icon, ariaLabel, isFirst, action, children }) {
     return (
         <div
             style={{
@@ -244,6 +256,31 @@ function TimelineRow({ icon, ariaLabel, isFirst, children }) {
                 {icon}
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+            {action && (
+                <button
+                    type="button"
+                    onClick={action.onClick}
+                    style={{
+                        flexShrink: 0,
+                        fontSize: 11.5,
+                        padding: '4px 10px',
+                        borderRadius: 4,
+                        border: '1px solid #d4d8de',
+                        background: '#fff',
+                        color: '#3a4654',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        // Centered against the multi-line content column
+                        // so the affordance reads as "row-level", not
+                        // "title-level". When singles eventually get
+                        // their own actions, the same vertical center
+                        // looks right against a 1- or 2-line row too.
+                        alignSelf: 'center',
+                    }}
+                >
+                    {action.label}
+                </button>
+            )}
         </div>
     )
 }
@@ -314,7 +351,7 @@ function renderSingle(e, i, isFirst) {
  *     the most recent operator action and the right anchor for
  *     "when did this last change".
  */
-function renderGroup(runDesc, i, isFirst) {
+function renderGroup(runDesc, i, isFirst, onMarkPresent) {
     const decor = TYPE_DECORATION.attendance
     const newest = runDesc[0]
     const chronological = [...runDesc].reverse()
@@ -356,12 +393,43 @@ function renderGroup(runDesc, i, isFirst) {
         formatTimestamp(newest.ts),
     ].filter(Boolean).join(' · ')
 
+    // Action affordance — "Mark present" only when:
+    //   (a) the page passed a handler (no handler = no slot),
+    //   (b) the current/final status isn't already 'present' (no
+    //       point offering an action that's a no-op).
+    // Context payload is intentionally lean — just enough that a
+    // future real-action wiring can reconstruct the operation
+    // without re-querying. When the action is wired to a real
+    // RPC, the caller will use `latestClassId`/`latestSessionDate`
+    // to identify the session and `studentId` (closure-bound at
+    // page level) to scope the write.
+    const finalStatus = newest?.meta?.status
+    const showMarkPresent =
+        typeof onMarkPresent === 'function' &&
+        finalStatus &&
+        String(finalStatus).toLowerCase() !== 'present'
+    const action = showMarkPresent
+        ? {
+            label: 'Mark present',
+            onClick: () => onMarkPresent({
+                runSize:           runDesc.length,
+                latestTs:          newest.ts,
+                latestStatus:      finalStatus,
+                latestClassId:     newest?.meta?.class_id ?? null,
+                latestClassName:   newest?.meta?.class_name ?? null,
+                latestSessionDate: newest?.meta?.session_date ?? null,
+                latestActorId:     newest?.meta?.actor_id ?? null,
+            }),
+        }
+        : null
+
     return (
         <TimelineRow
             key={`group-attendance-${newest.ts}-${runDesc.length}-${i}`}
             icon={decor.icon}
             ariaLabel="attendance"
             isFirst={isFirst}
+            action={action}
         >
             <div style={{ fontWeight: 500, color: decor.color }}>
                 Attendance ({runDesc.length} updates)
@@ -428,6 +496,27 @@ export default function StudentTimelinePage() {
         }
     }
 
+    // Placeholder action handler — wired from grouped attendance
+    // rows via the row-level `action` slot. Logs only. The signature
+    // and call-site shape are intentionally what a future real
+    // implementation will need: studentId + schoolId from page
+    // closure, plus a row-derived `context` payload (latest class,
+    // latest session_date, etc.) that's enough to identify the
+    // session without a re-fetch.
+    //
+    // When the real "mark present" RPC is wired, this is the one
+    // function that needs to change — every grouped row passes
+    // through it. No JSX, no row plumbing, no service-layer code
+    // gets touched here.
+    const onMarkPresent = (context) => {
+        // eslint-disable-next-line no-console
+        console.log('[Timeline] Mark present (placeholder — no backend wired yet)', {
+            studentId,
+            schoolId,
+            ...context,
+        })
+    }
+
     return (
         <div style={{ padding: '20px 24px', maxWidth: 720, margin: '0 auto' }}>
             <div style={{ marginBottom: 12 }}>
@@ -459,7 +548,7 @@ export default function StudentTimelinePage() {
                     {buildDisplayItems(events).map((item, i) => {
                         const isFirst = i === 0
                         if (item.kind === 'group') {
-                            return renderGroup(item.events, i, isFirst)
+                            return renderGroup(item.events, i, isFirst, onMarkPresent)
                         }
                         return renderSingle(item.event, i, isFirst)
                     })}
