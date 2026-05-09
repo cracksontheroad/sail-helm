@@ -12,8 +12,9 @@ import assert from 'node:assert/strict'
 import { resolvePrimaryAction } from './resolvePrimaryAction.js'
 
 const handlers = {
-    onMarkPresent:      () => {},
-    onResolveBehaviour: () => {},
+    onMarkPresent:             () => {},
+    onResolveBehaviour:        () => {},
+    onMarkAssignmentSubmitted: () => {},
 }
 
 const NO_STATE = { markingKey: null, confirmingKey: null }
@@ -91,6 +92,116 @@ test('behaviour single with no status → null (defensive)', () => {
         meta: { event_id: 'b1' },
     }
     assert.equal(resolvePrimaryAction(row, NO_STATE, handlers), null)
+})
+
+// ── Assignments ────────────────────────────────────────────────────────────
+
+test('assignment_assigned single with status=assigned → Mark submitted', () => {
+    const row = {
+        kind: 'single',
+        type: 'assignment_assigned',
+        key:  '2026-05-01T07:09:52Z',
+        meta: { status: 'assigned', student_assignment_id: 'sa1', assignment_id: 'a1', class_id: 'c1' },
+    }
+    const action = resolvePrimaryAction(row, NO_STATE, handlers)
+    assert.ok(action)
+    assert.equal(action.label, 'Mark submitted')
+    assert.equal(action.disabled, false)
+    assert.equal(action.variant, 'default')
+})
+
+test('assignment_assigned with status=submitted → null', () => {
+    const row = {
+        kind: 'single',
+        type: 'assignment_assigned',
+        key:  '2026-05-01T07:09:52Z',
+        meta: { status: 'submitted', student_assignment_id: 'sa1', assignment_id: 'a1' },
+    }
+    assert.equal(resolvePrimaryAction(row, NO_STATE, handlers), null)
+})
+
+test('assignment_assigned with status=graded → null', () => {
+    const row = {
+        kind: 'single',
+        type: 'assignment_assigned',
+        key:  '2026-05-01T07:09:52Z',
+        meta: { status: 'graded', student_assignment_id: 'sa1', assignment_id: 'a1' },
+    }
+    assert.equal(resolvePrimaryAction(row, NO_STATE, handlers), null)
+})
+
+test('assignment_GRADED row type → null (no overlap with assignment_assigned)', () => {
+    const row = {
+        kind: 'single',
+        type: 'assignment_graded',
+        key:  '2026-05-08T10:00:00Z',
+        meta: { status: 'graded', student_assignment_id: 'sa1', assignment_id: 'a1' },
+    }
+    assert.equal(resolvePrimaryAction(row, NO_STATE, handlers), null)
+})
+
+test('assignment cascade — markingKey match → "Submitting…"', () => {
+    const row = {
+        kind: 'single', type: 'assignment_assigned', key: 'sa-row-1',
+        meta: { status: 'assigned', student_assignment_id: 'sa1', assignment_id: 'a1' },
+    }
+    const action = resolvePrimaryAction(row, { markingKey: 'sa-row-1', confirmingKey: null }, handlers)
+    assert.equal(action.label, 'Submitting…')
+    assert.equal(action.disabled, true)
+})
+
+test('assignment cascade — confirmingKey match → "Confirm" + variant=confirming', () => {
+    const row = {
+        kind: 'single', type: 'assignment_assigned', key: 'sa-row-1',
+        meta: { status: 'assigned', student_assignment_id: 'sa1', assignment_id: 'a1' },
+    }
+    const action = resolvePrimaryAction(row, { markingKey: null, confirmingKey: 'sa-row-1' }, handlers)
+    assert.equal(action.label, 'Confirm')
+    assert.equal(action.variant, 'confirming')
+})
+
+test('assignment onClick → handler receives expected payload (studentAssignmentId is the action key)', () => {
+    let captured = null
+    const row = {
+        kind: 'single', type: 'assignment_assigned', key: '2026-05-01T07:09:52Z',
+        meta: {
+            status: 'assigned',
+            student_assignment_id: 'sa-uuid',
+            assignment_id: 'a-uuid',
+            class_id: 'c-uuid',
+            class_name: 'English',
+        },
+    }
+    const action = resolvePrimaryAction(row, NO_STATE, {
+        onMarkAssignmentSubmitted: (ctx) => { captured = ctx },
+    })
+    action.onClick()
+    assert.deepEqual(captured, {
+        studentAssignmentId: 'sa-uuid',
+        assignmentId:        'a-uuid',
+        eventTs:             '2026-05-01T07:09:52Z',
+        classId:             'c-uuid',
+        className:           'English',
+    })
+})
+
+test('cross-domain isolation — open behaviour row does not match assignment branch', () => {
+    const row = {
+        kind: 'single', type: 'behaviour', key: 'b1',
+        meta: { status: 'open', event_id: 'b1' },   // status=open is real for behaviour
+    }
+    const action = resolvePrimaryAction(row, NO_STATE, handlers)
+    assert.ok(action)
+    assert.equal(action.label, 'Resolve')   // not "Mark submitted"
+})
+
+test('cross-domain isolation — attendance group does not match assignment branch', () => {
+    const row = {
+        kind: 'group', type: 'attendance', key: 'k1', runSize: 2,
+        meta: { status: 'late', class_id: 'c1', session_date: '2026-05-09' },
+    }
+    const action = resolvePrimaryAction(row, NO_STATE, handlers)
+    assert.equal(action.label, 'Mark present')
 })
 
 // ── State cascade (marking > confirming > default) ─────────────────────────

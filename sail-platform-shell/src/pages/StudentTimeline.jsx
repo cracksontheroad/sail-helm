@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import { getStudentTimeline } from '../services/timeline'
 import { markAttendancePresent } from '../services/attendance'
 import { resolveBehaviourEvent } from '../services/behaviour'
+import { markSubmissionReceived } from '../services/assignments'
 import { resolvePrimaryAction } from '../lib/resolvePrimaryAction'
 
 /**
@@ -484,7 +485,7 @@ function SubtleLine({ children }) {
 
 function renderSingle(
     e, i, isFirst,
-    recentlyUpdatedKey, onResolveBehaviour, markingKey, confirmingKey,
+    recentlyUpdatedKey, handlers, markingKey, confirmingKey,
 ) {
     const decor = TYPE_DECORATION[e.type] || { icon: '·', color: '#5b6877' }
     const subline = [
@@ -496,7 +497,8 @@ function renderSingle(
     // the single decision point that enforces "one primary action per
     // row" structurally and emits a dev warn if branches ever overlap.
     // To add a new action type for a row kind, edit the resolver, not
-    // this call site.
+    // this call site. `handlers` is the page-level handler bag passed
+    // straight through; the resolver picks the relevant one per branch.
     const primaryAction = resolvePrimaryAction(
         {
             kind:  'single',
@@ -506,7 +508,7 @@ function renderSingle(
             meta:  e.meta,
         },
         { markingKey, confirmingKey },
-        { onResolveBehaviour },
+        handlers,
     )
     return (
         <TimelineRow
@@ -767,6 +769,64 @@ export default function StudentTimelinePage() {
     // update of `events`. The grouping logic, trend arrow, etc.
     // all derive from `events`, and refetching avoids the trap of
     // hand-editing one event in the middle of a sorted UNION.
+    // Action handler for assignment_assigned rows — flips a
+    // student_assignment from 'assigned' to 'submitted' via the
+    // existing bridge_mark_submission_received RPC, then refetches.
+    //
+    // Same state machine + pre-highlight + re-anchor pattern as the
+    // other handlers. Re-anchor matches by student_assignment_id
+    // (stable across the status change; created_at doesn't shift on
+    // submission, same as behaviour resolve).
+    //
+    // Notable: this handler reuses the existing
+    // `markSubmissionReceived` service wrapper rather than introducing
+    // a new RPC — `bridge_mark_submission_received` already implements
+    // the same SECURITY DEFINER + permission gate (`is_staff_of_school
+    // OR has_permission('assignments.write')`) + audit pattern as the
+    // other quick-actions, so a duplicate would be dead weight. The
+    // audit surface tag in that RPC defaults to 'helm.assignments';
+    // attribution from the timeline is captured via the semantic
+    // 'submission.received' event regardless of surface.
+    const onMarkAssignmentSubmitted = async (context) => {
+        if (markingKey) return
+        if (!context?.studentAssignmentId) {
+            // eslint-disable-next-line no-console
+            console.error('[Timeline] Mark submitted: missing student_assignment_id', context)
+            return
+        }
+        const key = context.eventTs
+        if (confirmingKey !== key) {
+            setConfirmingKey(key)
+            return
+        }
+        setConfirmingKey(null)
+        setMarkingKey(key)
+        setRecentlyUpdatedKey(key)
+        try {
+            await markSubmissionReceived(context.studentAssignmentId)
+            const rows = await getStudentTimeline({
+                schoolId, studentId, limit: PAGE_SIZE,
+            })
+            setEvents(rows)
+            setHasMore(rows.length >= PAGE_SIZE)
+            // Re-anchor by student_assignment_id. The row's ts is
+            // unchanged (created_at doesn't shift on submission), so
+            // the matched row's ts == the pre-highlight key. Setting
+            // it again restarts the highlight effect's timer cleanly.
+            const updated = (rows || []).find(r =>
+                r.type === 'assignment_assigned' &&
+                r.meta?.student_assignment_id === context.studentAssignmentId &&
+                String(r.meta?.status).toLowerCase() === 'submitted'
+            )
+            if (updated?.ts) setRecentlyUpdatedKey(updated.ts)
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('[Timeline] Mark submitted failed:', err)
+        } finally {
+            setMarkingKey(null)
+        }
+    }
+
     // Real action handler for behaviour rows — replaces the earlier
     // "Add note" placeholder. Resolves an open behaviour event via
     // bridge_resolve_behaviour_event, then refetches the timeline.
@@ -969,9 +1029,16 @@ export default function StudentTimelinePage() {
                                 onMarkPresent, markingKey, recentlyUpdatedKey, confirmingKey,
                             )
                         }
+                        // Single-row handlers travel as a bag so the
+                        // resolver can pick the one matching the
+                        // branch. Adding a fourth single-row action
+                        // type adds one entry here, plus the matching
+                        // entries in the resolver and a service
+                        // wrapper — no other plumbing.
                         return renderSingle(
                             item.event, i, isFirst,
-                            recentlyUpdatedKey, onResolveBehaviour,
+                            recentlyUpdatedKey,
+                            { onResolveBehaviour, onMarkAssignmentSubmitted },
                             markingKey, confirmingKey,
                         )
                     })}

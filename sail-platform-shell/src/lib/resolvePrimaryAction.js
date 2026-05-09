@@ -42,6 +42,7 @@
  * @param {object} handlers
  *   @param {Function=} handlers.onMarkPresent
  *   @param {Function=} handlers.onResolveBehaviour
+ *   @param {Function=} handlers.onMarkAssignmentSubmitted
  *
  * @returns {null | {
  *   key: string,
@@ -77,6 +78,17 @@ export function resolvePrimaryAction(row, state, handlers) {
         && String(row.meta?.status ?? '').toLowerCase() === 'open'
         && typeof h.onResolveBehaviour === 'function') {
         matched.push(buildResolveBehaviourAction(row, { markingKey, confirmingKey }, h.onResolveBehaviour))
+    }
+
+    // ── Branch: assignment_assigned single with status='assigned'
+    // Lifecycle: assigned → submitted → graded. Action only applies
+    // to the first state; once submitted/graded the gate fails and
+    // the affordance disappears on next render.
+    if (row.kind === 'single'
+        && row.type === 'assignment_assigned'
+        && String(row.meta?.status ?? '').toLowerCase() === 'assigned'
+        && typeof h.onMarkAssignmentSubmitted === 'function') {
+        matched.push(buildMarkAssignmentSubmittedAction(row, { markingKey, confirmingKey }, h.onMarkAssignmentSubmitted))
     }
 
     // Dev-only guardrail — this should NEVER fire in production. If it
@@ -134,6 +146,30 @@ function buildMarkPresentAction(row, state, onMarkPresent) {
             latestClassName:   row.meta?.class_name ?? null,
             latestSessionDate: row.meta?.session_date ?? null,
             latestActorId:     row.meta?.actor_id ?? null,
+        }),
+    }
+}
+
+function buildMarkAssignmentSubmittedAction(row, state, onMarkAssignmentSubmitted) {
+    const { label, disabled, variant } = cascadeLabel({
+        markingKey:    state.markingKey,
+        confirmingKey: state.confirmingKey,
+        key:           row.key,
+        marking:       'Submitting…',
+        confirming:    'Confirm',
+        idle:          'Mark submitted',
+    })
+    return {
+        key: row.key,
+        label,
+        disabled,
+        variant,
+        onClick: () => onMarkAssignmentSubmitted({
+            studentAssignmentId: row.meta?.student_assignment_id ?? null,
+            assignmentId:        row.meta?.assignment_id        ?? null,
+            eventTs:             row.key,
+            classId:             row.meta?.class_id   ?? null,
+            className:           row.meta?.class_name ?? null,
         }),
     }
 }
