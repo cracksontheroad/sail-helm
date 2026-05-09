@@ -185,12 +185,33 @@ export default function StudentTimelinePage() {
                         const decor = TYPE_DECORATION[e.type] || { icon: '·', color: '#5b6877' }
                         // Single subtle subline beneath the title: existing
                         // contextual subtext + actor attribution + timestamp,
-                        // joined by " · ". `actor_name` is omitted entirely
-                        // when null (legacy/missing data) so the prefix
-                        // never reads "by — " as a placeholder.
+                        // joined by " · ".
+                        //
+                        // Actor resolution rules:
+                        //   1. If `meta.actor_name` is populated → render
+                        //      "by {actor_name}".
+                        //   2. Else if `type === 'assignment_graded'` →
+                        //      render "by AI". This is the one event class
+                        //      where the action is performed automatically
+                        //      (no `ai_graded_by` column on
+                        //      `student_assignments` to enrich), so the
+                        //      attribution is semantically known even
+                        //      though the actor row is null. Encoding it
+                        //      here prevents the "teacher vs automatic"
+                        //      ambiguity for graded events.
+                        //   3. Else → omit the segment. Don't render
+                        //      placeholder text like "Unknown" or "System"
+                        //      for other event types — that just adds
+                        //      noise to legacy/missing-actor rows.
+                        let actorLabel = null
+                        if (e.meta?.actor_name) {
+                            actorLabel = `by ${e.meta.actor_name}`
+                        } else if (e.type === 'assignment_graded') {
+                            actorLabel = 'by AI'
+                        }
                         const subParts = [
                             eventSubtext(e),
-                            e.meta?.actor_name ? `by ${e.meta.actor_name}` : null,
+                            actorLabel,
                             formatTimestamp(e.ts),
                         ].filter(Boolean)
                         const subline = subParts.join(' · ')
