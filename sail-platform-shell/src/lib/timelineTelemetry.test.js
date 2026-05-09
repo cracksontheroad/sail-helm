@@ -15,6 +15,7 @@ import {
     shouldHintConfirmRemoval,
     validateSlot,
     getRecentSlot,
+    buildSessionSnapshot,
 } from './timelineTelemetry.js'
 
 // Silence console output during tests — the module logs via
@@ -374,6 +375,81 @@ test('reset — clears recent events alongside aggregate', () => {
     })
     const list = globalThis.__timelineMetrics.recentEvents[TIMELINE_ACTIONS.MARK_PRESENT]
     assert.equal(list.length, 1)
+})
+
+// ── buildSessionSnapshot ───────────────────────────────────────────────────
+
+test('snapshot — empty metrics produce a well-formed empty snapshot', () => {
+    const snap = buildSessionSnapshot()
+    assert.ok(typeof snap.ts === 'number')
+    assert.ok(typeof snap.iso === 'string')
+    assert.deepEqual(snap.actions, {})
+    assert.deepEqual(snap.recentErrors, [])
+    assert.equal(snap.flags.forceError,  false)
+    assert.equal(snap.flags.slowNetwork, false)
+})
+
+test('snapshot — captures lifetime + recent + recentEvents per action', () => {
+    withMockedNow([1000], () => {
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'confirm' })
+        logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'success', durationMs: 250 })
+    })
+    withMockedNow([1500], () => {
+        const snap = buildSessionSnapshot()
+        const slot = snap.actions[TIMELINE_ACTIONS.MARK_PRESENT]
+        assert.ok(slot)
+        // Lifetime counters
+        assert.equal(slot.lifetime.click,   1)
+        assert.equal(slot.lifetime.confirm, 1)
+        assert.equal(slot.lifetime.success, 1)
+        assert.equal(slot.lifetime.error,   0)
+        assert.equal(slot.lifetime.lastDurationMs, 250)
+        // Recent slot (within window)
+        assert.deepEqual(slot.recent, { click: 1, confirm: 1, success: 1, error: 0 })
+        // Recent events list (3 entries)
+        assert.equal(slot.recentEvents.length, 3)
+        assert.equal(slot.recentEvents[0].phase, 'click')
+    })
+})
+
+test('snapshot — flags reflect current global state', () => {
+    globalThis.__SAIL_FORCE_ERROR__  = true
+    globalThis.__SAIL_SLOW_NETWORK__ = false
+    try {
+        const snap = buildSessionSnapshot()
+        assert.equal(snap.flags.forceError,  true)
+        assert.equal(snap.flags.slowNetwork, false)
+    } finally {
+        delete globalThis.__SAIL_FORCE_ERROR__
+        delete globalThis.__SAIL_SLOW_NETWORK__
+    }
+})
+
+test('snapshot — captures recent errors ring', () => {
+    logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'error', error: 'rls denied' })
+    const snap = buildSessionSnapshot()
+    assert.equal(snap.recentErrors.length, 1)
+    assert.equal(snap.recentErrors[0].message, 'rls denied')
+})
+
+test('snapshot — JSON-serialisable (no functions, no circular refs)', () => {
+    logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    const snap = buildSessionSnapshot()
+    const json = JSON.stringify(snap)   // throws on circular / function values
+    const round = JSON.parse(json)
+    assert.deepEqual(round.actions, snap.actions)
+})
+
+test('snapshot — clones live data (consumer mutation cannot corrupt aggregate)', () => {
+    logTimelineAction({ action: TIMELINE_ACTIONS.MARK_PRESENT, phase: 'click' })
+    const snap = buildSessionSnapshot()
+    // Mutate the snapshot's lifetime + recentEvents
+    snap.actions[TIMELINE_ACTIONS.MARK_PRESENT].lifetime.click = 999
+    snap.actions[TIMELINE_ACTIONS.MARK_PRESENT].recentEvents.push({ phase: 'fake', ts: 0 })
+    // The live aggregate must be unchanged.
+    assert.equal(globalThis.__timelineMetrics.byAction[TIMELINE_ACTIONS.MARK_PRESENT].click, 1)
+    assert.equal(globalThis.__timelineMetrics.recentEvents[TIMELINE_ACTIONS.MARK_PRESENT].length, 1)
 })
 
 test('logTimelineAction — initialises window.__timelineMetrics on first call', () => {

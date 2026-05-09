@@ -25,6 +25,7 @@ import {
     shouldHintConfirmRemoval,
     validateSlot,
     getRecentSlot,
+    buildSessionSnapshot,
 } from './timelineTelemetry'
 
 // Module-level constant. Vite replaces `process.env.NODE_ENV` with
@@ -58,6 +59,37 @@ const SPAM_CLICK_INTERVAL_MS = 80
 // either side ever changes.
 const RECENT_WINDOW_MS = 60_000
 
+/**
+ * Build the snapshot, JSON-encode it, and trigger a browser
+ * download of `timeline-debug-<ts>.json`. Returns the snapshot
+ * object so a console invocation
+ * (`window.__SAIL_DEBUG_EXPORT__()`) can inspect inline as well
+ * as save to disk.
+ *
+ * Module-scope so the function reference is stable across
+ * renders — that's what lets the useEffect cleanup compare
+ * `globalThis.__SAIL_DEBUG_EXPORT__ === downloadSessionSnapshot`
+ * to safely unregister only the one this panel mounted.
+ *
+ * Defensive: if `document` or `URL` is missing (SSR, headless
+ * test runner), the download is skipped but the snapshot is
+ * still returned so callers can use it programmatically.
+ */
+function downloadSessionSnapshot() {
+    const snap = buildSessionSnapshot()
+    if (typeof document === 'undefined' || typeof URL === 'undefined') return snap
+    const blob = new Blob([JSON.stringify(snap, null, 2)], { type: 'application/json' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href     = url
+    a.download = `timeline-debug-${snap.ts}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    return snap
+}
+
 const RECENT_ERROR_LIMIT = 5
 
 export default function TimelineDebugPanel() {
@@ -70,6 +102,24 @@ export default function TimelineDebugPanel() {
         if (!IS_DEV) return undefined
         const id = setInterval(() => setTick(t => t + 1), 500)
         return () => clearInterval(id)
+    }, [])
+
+    // Expose the export function on globalThis so a dev can
+    // trigger a session snapshot download from the browser
+    // console without touching the panel UI:
+    //   `window.__SAIL_DEBUG_EXPORT__()`
+    // The cleanup compares the registered reference against the
+    // module-scope function so we never delete an export installed
+    // by some other instance (e.g. during HMR re-mounts).
+    useEffect(() => {
+        if (!IS_DEV) return undefined
+        if (typeof globalThis === 'undefined') return undefined
+        globalThis.__SAIL_DEBUG_EXPORT__ = downloadSessionSnapshot
+        return () => {
+            if (globalThis.__SAIL_DEBUG_EXPORT__ === downloadSessionSnapshot) {
+                delete globalThis.__SAIL_DEBUG_EXPORT__
+            }
+        }
     }, [])
 
     if (!IS_DEV) return null
@@ -204,13 +254,27 @@ export default function TimelineDebugPanel() {
                         </span>
                     )}
                 </span>
-                <button
-                    type="button"
-                    onClick={handleReset}
-                    style={ctrlButtonStyle(false)}
-                >
-                    Reset
-                </button>
+                <div style={{ display: 'flex', gap: 4 }}>
+                    <button
+                        type="button"
+                        onClick={downloadSessionSnapshot}
+                        title={
+                            'Download a JSON snapshot of the entire telemetry state ' +
+                            '(lifetime + recent slots + recent events + flags). ' +
+                            'Also available as window.__SAIL_DEBUG_EXPORT__().'
+                        }
+                        style={ctrlButtonStyle(false)}
+                    >
+                        Export
+                    </button>
+                    <button
+                        type="button"
+                        onClick={handleReset}
+                        style={ctrlButtonStyle(false)}
+                    >
+                        Reset
+                    </button>
+                </div>
             </div>
 
             {/* Stress controls — three "spam" buttons (one per

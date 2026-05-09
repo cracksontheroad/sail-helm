@@ -384,6 +384,70 @@ export function getRecentSlot(action, windowMs = _RECENT_WINDOW_MS) {
 }
 
 /**
+ * Build a JSON-serialisable snapshot of the entire telemetry state
+ * for offline analysis or bug-report sharing. Pure read — never
+ * mutates the aggregate or the flags. Safe to call any time.
+ *
+ * Shape:
+ *   {
+ *     ts:  numeric ms-since-epoch,
+ *     iso: ISO 8601 string (human-readable, same instant as `ts`),
+ *     actions: {
+ *       [actionId]: {
+ *         lifetime: { click, confirm, success, error,
+ *                     totalDurationMs, lastDurationMs, avgDurationMs },
+ *         recent:   { click, confirm, success, error },
+ *         recentEvents: [ {phase, ts}, ... ],   // last ~60s of events
+ *       },
+ *     },
+ *     recentErrors: [ {action, message, ts}, ... ],
+ *     flags: {
+ *       forceError:  boolean,   // __SAIL_FORCE_ERROR__
+ *       slowNetwork: boolean,   // __SAIL_SLOW_NETWORK__
+ *     },
+ *   }
+ *
+ * Why a snapshot, not a stream:
+ *   * The session aggregate is already bounded by lifetime counters
+ *     + a 60s recent-events window + a 25-entry recent-errors ring,
+ *     so a one-shot dump is small and self-contained.
+ *   * No backend, no schema migration, no infra debate. Two
+ *     snapshots from different sessions can be diffed manually.
+ *   * Reproducibility: the flags field captures whether the
+ *     captured state was produced under stress conditions (force
+ *     error / slow network), so a shared report is interpretable.
+ *
+ * @returns {object} the snapshot
+ */
+export function buildSessionSnapshot() {
+    const now = Date.now()
+    const m   = (typeof globalThis !== 'undefined' && globalThis.__timelineMetrics) || null
+    const byAction = m?.byAction || {}
+
+    const actions = {}
+    for (const actionId of Object.keys(byAction)) {
+        actions[actionId] = {
+            // Shallow clone so consumers can't mutate the live
+            // aggregate by accident.
+            lifetime:     { ...byAction[actionId] },
+            recent:       getRecentSlot(actionId),
+            recentEvents: (m?.recentEvents?.[actionId] || []).map(e => ({ ...e })),
+        }
+    }
+
+    return {
+        ts:  now,
+        iso: new Date(now).toISOString(),
+        actions,
+        recentErrors: (m?.recentErrors || []).map(e => ({ ...e })),
+        flags: {
+            forceError:  !!(typeof globalThis !== 'undefined' && globalThis.__SAIL_FORCE_ERROR__),
+            slowNetwork: !!(typeof globalThis !== 'undefined' && globalThis.__SAIL_SLOW_NETWORK__),
+        },
+    }
+}
+
+/**
  * Test helper — drops the in-memory aggregate so tests don't
  * accumulate state across cases. Not exported as a public API
  * (the underscore prefix is the convention).
