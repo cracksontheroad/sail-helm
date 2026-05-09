@@ -241,6 +241,28 @@ function eventSubtext(event) {
 // monotonically backwards in time without overlap or duplicates.
 const PAGE_SIZE = 50
 
+// ── Dev-only stress hooks ─────────────────────────────────────────
+// These read globalThis flags that the TimelineDebugPanel toggles on
+// click. In production both flags are always falsy — never set
+// without the dev panel — so the helpers no-op and add zero observable
+// behaviour. The helpers live at module scope so all three handlers
+// import the same two lines, keeping the call sites uniform.
+//
+//   __SAIL_FORCE_ERROR__   — when truthy, the next handler invocation
+//                            throws synthetic error before the RPC.
+//   __SAIL_SLOW_NETWORK__  — when truthy, the next handler invocation
+//                            sleeps ~1s before the RPC.
+async function maybeStressDelay() {
+    if (typeof globalThis !== 'undefined' && globalThis.__SAIL_SLOW_NETWORK__) {
+        await new Promise(r => setTimeout(r, 1000))
+    }
+}
+function maybeStressThrow() {
+    if (typeof globalThis !== 'undefined' && globalThis.__SAIL_FORCE_ERROR__) {
+        throw new Error('[dev] forced error via __SAIL_FORCE_ERROR__')
+    }
+}
+
 /**
  * Resolve the "by …" actor label for a single event.
  * Resolution rules (locked):
@@ -407,6 +429,12 @@ function TimelineRow({ icon, ariaLabel, isFirst, isGrouped, action, highlighted,
                         // at rest, 1.0 when the parent row is hovered.
                         // No JS needed.
                         className="timeline-row-action"
+                        // Stable selector for the dev debug panel's
+                        // "spam clicks" stress control. Only the first
+                        // matching button on the page is targeted, so
+                        // this attribute is identifying the *kind* of
+                        // action, not the specific row.
+                        data-timeline-action={action.actionId}
                         onClick={action.onClick}
                         disabled={Boolean(action.disabled)}
                         style={{
@@ -827,6 +855,8 @@ export default function StudentTimelinePage() {
         setRecentlyUpdatedKey(key)
         const start = performance.now()
         try {
+            await maybeStressDelay()
+            maybeStressThrow()
             await markSubmissionReceived(context.studentAssignmentId)
             const rows = await getStudentTimeline({
                 schoolId, studentId, limit: PAGE_SIZE,
@@ -916,6 +946,8 @@ export default function StudentTimelinePage() {
         setRecentlyUpdatedKey(key)
         const start = performance.now()
         try {
+            await maybeStressDelay()
+            maybeStressThrow()
             await resolveBehaviourEvent({ eventId: context.eventId })
             const rows = await getStudentTimeline({
                 schoolId, studentId, limit: PAGE_SIZE,
@@ -1017,6 +1049,8 @@ export default function StudentTimelinePage() {
         setRecentlyUpdatedKey(key)
         const start = performance.now()
         try {
+            await maybeStressDelay()
+            maybeStressThrow()
             await markAttendancePresent({
                 studentId,
                 classId:     context.latestClassId,

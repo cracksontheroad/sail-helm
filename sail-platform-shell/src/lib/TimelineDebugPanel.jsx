@@ -32,12 +32,21 @@ const IS_DEV = !(typeof process !== 'undefined'
     && process.env?.NODE_ENV === 'production')
 
 // Render order + display labels for the three action types. Closed
-// list — when a fourth domain lands, add a row here.
+// list — when a fourth domain lands, add a row here. The `short`
+// label feeds the compact "spam" buttons in the control strip.
 const ACTION_LABELS = [
-    { key: 'attendance.mark_present',     label: 'Mark present' },
-    { key: 'behaviour.resolve',           label: 'Resolve' },
-    { key: 'assignment.mark_submitted',   label: 'Mark submitted' },
+    { key: 'attendance.mark_present',     label: 'Mark present',   short: 'present' },
+    { key: 'behaviour.resolve',           label: 'Resolve',        short: 'resolve' },
+    { key: 'assignment.mark_submitted',   label: 'Mark submitted', short: 'submit'  },
 ]
+
+// Stress-test parameters. Tuned empirically: 8 clicks at 80ms gives
+// React a render cycle between each click while still feeling like
+// a "rapid burst" — fast enough to test markingKey blocking but
+// not so synchronous that all clicks see the same stale closure
+// state. Tweak in source if the stress shape needs to change.
+const SPAM_CLICK_COUNT      = 8
+const SPAM_CLICK_INTERVAL_MS = 80
 
 const RECENT_ERROR_LIMIT = 5
 
@@ -65,6 +74,60 @@ export default function TimelineDebugPanel() {
             setTick(t => t + 1)   // immediate refresh, don't wait for the next tick
         }
     }
+
+    // ── Stress controls ──────────────────────────────────────────
+    //
+    // Spam: target the FIRST visible button matching the action's
+    // data attribute and click it N times with a small delay
+    // between clicks. The delay lets React commit between clicks
+    // so the test exercises the realistic "rapid clicks across
+    // renders" path, not the unrealistic "all clicks in one tick"
+    // edge case (which React's batching would defeat anyway).
+    //
+    // If no matching button is currently rendered, the spam silently
+    // no-ops and emits a console warning — useful signal that the
+    // dev needs to first scroll a relevant row into view.
+    const spamAction = (actionId) => {
+        const btn = document.querySelector(`[data-timeline-action="${actionId}"]`)
+        if (!btn) {
+            // eslint-disable-next-line no-console
+            console.warn('[Timeline debug] no visible button for', actionId)
+            return
+        }
+        let i = 0
+        const fire = () => {
+            if (i++ >= SPAM_CLICK_COUNT) return
+            btn.click()
+            setTimeout(fire, SPAM_CLICK_INTERVAL_MS)
+        }
+        fire()
+    }
+
+    // Toggles: flip a globalThis flag and force a re-render so the
+    // toggle's visual state reflects reality immediately, not after
+    // the next 500ms tick.
+    const forceErrorOn  = !!(typeof globalThis !== 'undefined' && globalThis.__SAIL_FORCE_ERROR__)
+    const slowNetworkOn = !!(typeof globalThis !== 'undefined' && globalThis.__SAIL_SLOW_NETWORK__)
+    const toggleForceError = () => {
+        if (typeof globalThis === 'undefined') return
+        globalThis.__SAIL_FORCE_ERROR__ = !globalThis.__SAIL_FORCE_ERROR__
+        setTick(t => t + 1)
+    }
+    const toggleSlowNetwork = () => {
+        if (typeof globalThis === 'undefined') return
+        globalThis.__SAIL_SLOW_NETWORK__ = !globalThis.__SAIL_SLOW_NETWORK__
+        setTick(t => t + 1)
+    }
+
+    const ctrlButtonStyle = (active) => ({
+        fontSize: 10,
+        padding: '2px 6px',
+        borderRadius: 3,
+        border: `1px solid ${active ? '#ffd28a' : '#3d4756'}`,
+        background: active ? '#3a2e1a' : 'transparent',
+        color: active ? '#ffd28a' : '#cbd2dc',
+        cursor: 'pointer',
+    })
 
     return (
         <div
@@ -100,18 +163,57 @@ export default function TimelineDebugPanel() {
                 <button
                     type="button"
                     onClick={handleReset}
-                    style={{
-                        fontSize: 10,
-                        padding: '2px 6px',
-                        borderRadius: 3,
-                        border: '1px solid #3d4756',
-                        background: 'transparent',
-                        color: '#cbd2dc',
-                        cursor: 'pointer',
-                    }}
+                    style={ctrlButtonStyle(false)}
                 >
                     Reset
                 </button>
+            </div>
+
+            {/* Stress controls — three "spam" buttons (one per
+                action) and two global toggles (force error / slow
+                network). Compact layout: title row + button row.
+                Toggles are visibly active when their flag is on
+                (warm border + warm text + dim background) so the
+                state is unambiguous at a glance. */}
+            <div style={{ marginBottom: 6 }}>
+                <div style={{ opacity: 0.5, fontSize: 10, marginBottom: 2 }}>
+                    stress
+                </div>
+                <div style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 4,
+                    alignItems: 'center',
+                }}>
+                    {ACTION_LABELS.map(({ key, short }) => (
+                        <button
+                            key={`spam-${key}`}
+                            type="button"
+                            onClick={() => spamAction(key)}
+                            title={`Spam ${SPAM_CLICK_COUNT} clicks at ${SPAM_CLICK_INTERVAL_MS}ms intervals on the first visible "${key}" button.`}
+                            style={ctrlButtonStyle(false)}
+                        >
+                            spam {short}
+                        </button>
+                    ))}
+                    <span style={{ opacity: 0.4, padding: '0 2px' }}>·</span>
+                    <button
+                        type="button"
+                        onClick={toggleForceError}
+                        title="When ON, every action handler throws a synthetic error before its RPC. Validates that error telemetry increments and UI recovers."
+                        style={ctrlButtonStyle(forceErrorOn)}
+                    >
+                        err {forceErrorOn ? 'ON' : 'off'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={toggleSlowNetwork}
+                        title="When ON, every action handler awaits ~1s before its RPC. Validates duration metrics and loading-state stability."
+                        style={ctrlButtonStyle(slowNetworkOn)}
+                    >
+                        slow {slowNetworkOn ? 'ON' : 'off'}
+                    </button>
+                </div>
             </div>
 
             {ACTION_LABELS.every(({ key }) => !byAction[key]) ? (

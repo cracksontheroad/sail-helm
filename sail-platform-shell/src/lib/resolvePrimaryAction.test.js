@@ -10,6 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { resolvePrimaryAction } from './resolvePrimaryAction.js'
+import { TIMELINE_ACTIONS } from './timelineTelemetry.js'
 
 const handlers = {
     onMarkPresent:             () => {},
@@ -197,6 +198,39 @@ test('cross-domain isolation — attendance group does not match assignment bran
     }
     const action = resolvePrimaryAction(row, NO_STATE, handlers)
     assert.equal(action.label, 'Mark present')
+})
+
+// ── actionId (stable enum identifier per branch) ───────────────────────────
+// The resolver intentionally hardcodes its action IDs as string literals to
+// stay decoupled from the telemetry module. These tests enforce that the
+// strings stay in sync with TIMELINE_ACTIONS — if either side drifts, both
+// these tests fail and the divergence shows up immediately.
+
+test('actionId — attendance branch matches TIMELINE_ACTIONS.MARK_PRESENT', () => {
+    const row = {
+        kind: 'group', type: 'attendance', key: 'k1', runSize: 2,
+        meta: { status: 'late', class_id: 'c1', session_date: '2026-05-09' },
+    }
+    const action = resolvePrimaryAction(row, NO_STATE, handlers)
+    assert.equal(action.actionId, TIMELINE_ACTIONS.MARK_PRESENT)
+})
+
+test('actionId — behaviour branch matches TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR', () => {
+    const row = {
+        kind: 'single', type: 'behaviour', key: 'b1',
+        meta: { status: 'open', event_id: 'b1' },
+    }
+    const action = resolvePrimaryAction(row, NO_STATE, handlers)
+    assert.equal(action.actionId, TIMELINE_ACTIONS.RESOLVE_BEHAVIOUR)
+})
+
+test('actionId — assignment branch matches TIMELINE_ACTIONS.MARK_ASSIGNMENT', () => {
+    const row = {
+        kind: 'single', type: 'assignment_assigned', key: 'sa1',
+        meta: { status: 'assigned', student_assignment_id: 'sa1', assignment_id: 'a1' },
+    }
+    const action = resolvePrimaryAction(row, NO_STATE, handlers)
+    assert.equal(action.actionId, TIMELINE_ACTIONS.MARK_ASSIGNMENT)
 })
 
 // ── requiresConfirm (per-domain policy) ────────────────────────────────────

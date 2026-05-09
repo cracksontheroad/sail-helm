@@ -46,6 +46,7 @@
  *
  * @returns {null | {
  *   key: string,
+ *   actionId: string,            // stable enum id for telemetry/DOM hooks
  *   label: string,
  *   onClick: Function,
  *   disabled: boolean,
@@ -69,6 +70,16 @@
  * change the policy per domain. Handlers still own their own RPC
  * + matching, but their arming logic is gated on this flag.
  */
+
+// Stable action identifiers — duplicated as string literals here
+// (rather than imported from the telemetry module) to keep the
+// resolver decoupled from React-adjacent code. The strings must
+// stay in sync with TIMELINE_ACTIONS in timelineTelemetry.js;
+// resolver tests assert each branch's value, so a divergence
+// fails the test suite immediately.
+const ACTION_ID_MARK_PRESENT      = 'attendance.mark_present'
+const ACTION_ID_RESOLVE_BEHAVIOUR = 'behaviour.resolve'
+const ACTION_ID_MARK_ASSIGNMENT   = 'assignment.mark_submitted'
 export function resolvePrimaryAction(row, state, handlers) {
     if (!row) return null
     const markingKey    = state?.markingKey    ?? null
@@ -165,6 +176,7 @@ function buildMarkPresentAction(row, state, onMarkPresent) {
     })
     return {
         key: row.key,
+        actionId: ACTION_ID_MARK_PRESENT,
         label,
         disabled,
         variant,
@@ -198,6 +210,7 @@ function buildMarkAssignmentSubmittedAction(row, state, onMarkAssignmentSubmitte
     })
     return {
         key: row.key,
+        actionId: ACTION_ID_MARK_ASSIGNMENT,
         label,
         disabled,
         variant,
@@ -228,6 +241,7 @@ function buildResolveBehaviourAction(row, state, onResolveBehaviour) {
     })
     return {
         key: row.key,
+        actionId: ACTION_ID_RESOLVE_BEHAVIOUR,
         label,
         disabled,
         variant,
