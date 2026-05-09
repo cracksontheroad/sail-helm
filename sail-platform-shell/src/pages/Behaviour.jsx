@@ -204,8 +204,8 @@ export default function BehaviourPage() {
             <ErrorBox error={error} />
 
             {/* ── Student picker ─────────────────────────────────────── */}
-            <div style={{ marginBottom: 14 }}>
-                <label style={{ fontSize: 13, color: '#5b6877', marginRight: 8 }}>
+            <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <label style={{ fontSize: 13, color: '#5b6877' }}>
                     Student
                 </label>
                 <select
@@ -222,6 +222,17 @@ export default function BehaviourPage() {
                         ))
                     )}
                 </select>
+                {/* Phase D — entry link to the unified student timeline.
+                    Only renders when school + student context is loaded;
+                    school_id derived from getClass payload. */}
+                {selectedStudentId && klass?.school?.id && (
+                    <Link
+                        to={`/schools/${klass.school.id}/students/${selectedStudentId}/timeline`}
+                        style={{ fontSize: 12.5, color: '#3b6cd8' }}
+                    >
+                        View Timeline →
+                    </Link>
+                )}
             </div>
 
             {/* ── Quick-log form ─────────────────────────────────────── */}

@@ -15,6 +15,7 @@ import Gradebook from './pages/Gradebook'
 import ClassPage from './pages/Class'
 import AttendancePage from './pages/Attendance'
 import BehaviourPage from './pages/Behaviour'
+import StudentTimelinePage from './pages/StudentTimeline'
 import MyAssignmentsPage from './pages/MyAssignments'
 
 /**
@@ -334,6 +335,12 @@ function App() {
                     /attendance: any school member can land on the
                     page; only staff can log via the RPC's gate. */}
                 <Route path="/class/:classId/behaviour" element={<BehaviourPage />} />
+                {/* Phase D — read-only unified per-student timeline.
+                    School-scoped URL per Timeline v1 spec. The timeline
+                    RPC validates student-school membership; pages link
+                    here from the Behaviour view (which has student
+                    context) by deriving schoolId from the class. */}
+                <Route path="/schools/:schoolId/students/:studentId/timeline" element={<StudentTimelinePage />} />
                 {CAN.viewGradebook(role) && (
                     <Route path="/gradebook" element={<Gradebook />} />
                 )}
