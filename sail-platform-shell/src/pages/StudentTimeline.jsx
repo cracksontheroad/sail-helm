@@ -51,6 +51,43 @@ const TYPE_DECORATION = {
     assignment_graded:   { icon: '✅', color: '#1f8a4d' },
 }
 
+// ────────────────────────────────────────────────────────────────────
+// Hover affordance — CSS-only, no React state.
+//
+// Two effects when a row carries an `action`:
+//   1. Action button sits at 0.65 opacity at rest, 1.0 on row hover.
+//      Signals "this row does something" before interaction without
+//      shouting on every row.
+//   2. Subtle neutral-gray background tint on row hover. Distinct
+//      from the pale-green "just-changed" highlight (`#e6f5ea`) so
+//      hover and confirmed-action states never read the same.
+//
+// Why a `<style>` tag and not inline:
+//   * `:hover` can't be expressed in inline `style={}` without
+//     adding mouse-tracking React state — which the spec forbids.
+//   * One static stylesheet per page mount is essentially free; the
+//     browser deduplicates re-inserted identical style content.
+//
+// Why the inline highlight still wins:
+//   * Inline styles trump CSS class rules on specificity. When
+//     `highlighted=true`, the row sets `backgroundColor: #e6f5ea`
+//     inline, which beats the CSS hover background. When
+//     `highlighted=false`, the row OMITS the backgroundColor inline
+//     so the CSS hover rule can take effect — that's why the row
+//     style below uses a conditional spread, not `: 'transparent'`.
+// ────────────────────────────────────────────────────────────────────
+const TIMELINE_HOVER_CSS = `
+.timeline-row-actionable:hover {
+    background-color: #f7f8fa;
+}
+.timeline-row-actionable .timeline-row-action {
+    opacity: 0.65;
+}
+.timeline-row-actionable:hover .timeline-row-action {
+    opacity: 1;
+}
+`
+
 function ErrorBox({ error }) {
     if (!error) return null
     return (
@@ -253,8 +290,13 @@ function attendanceTrend(first, last) {
  * which is the desired "your change is right here" cue.
  */
 function TimelineRow({ icon, ariaLabel, isFirst, action, highlighted, children }) {
+    // Class flag: rows that carry an action get hover-affordance
+    // styling via the page-level `<style>` block. Rows without an
+    // action skip the class and stay visually quiet on hover.
+    const className = action ? 'timeline-row-actionable' : undefined
     return (
         <div
+            className={className}
             style={{
                 display: 'flex',
                 alignItems: 'flex-start',
@@ -262,11 +304,13 @@ function TimelineRow({ icon, ariaLabel, isFirst, action, highlighted, children }
                 padding: '10px 14px',
                 borderTop: isFirst ? 'none' : '1px solid #e3e6eb',
                 fontSize: 13,
-                // Pale-green family — sits in the same accent space as
-                // the assignment_graded decoration but lighter so it
-                // doesn't compete with type icons. Transparent default
-                // means rows have no row-coloring otherwise.
-                backgroundColor: highlighted ? '#e6f5ea' : 'transparent',
+                // Inline backgroundColor only when highlighted — this
+                // is intentional. Setting `transparent` inline would
+                // beat the CSS hover background; omitting it lets the
+                // hover rule take effect for actionable rows. Inline
+                // wins for highlighted rows so the success colour
+                // never gets clobbered by hover.
+                ...(highlighted ? { backgroundColor: '#e6f5ea' } : {}),
                 transition: 'background-color 1.2s ease-out',
             }}
         >
@@ -292,6 +336,11 @@ function TimelineRow({ icon, ariaLabel, isFirst, action, highlighted, children }
                 return (
                     <button
                         type="button"
+                        // `timeline-row-action` hooks the button into
+                        // the page-level hover affordance: 0.65 opacity
+                        // at rest, 1.0 when the parent row is hovered.
+                        // No JS needed.
+                        className="timeline-row-action"
                         onClick={action.onClick}
                         disabled={Boolean(action.disabled)}
                         style={{
@@ -318,7 +367,7 @@ function TimelineRow({ icon, ariaLabel, isFirst, action, highlighted, children }
                             // same vertical center looks right against
                             // a 1- or 2-line row too.
                             alignSelf: 'center',
-                            transition: 'background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out',
+                            transition: 'background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out, opacity 150ms ease-out',
                         }}
                     >
                         {action.label}
@@ -707,6 +756,12 @@ export default function StudentTimelinePage() {
 
     return (
         <div style={{ padding: '20px 24px', maxWidth: 720, margin: '0 auto' }}>
+            {/* Page-scoped hover affordance rules. Injected once per
+                mount; the browser dedupes identical content across
+                rerenders. See TIMELINE_HOVER_CSS for the rationale on
+                why hover is CSS-only and how it composes with the
+                inline highlight. */}
+            <style>{TIMELINE_HOVER_CSS}</style>
             <div style={{ marginBottom: 12 }}>
                 {/* Phase D pair-route — deterministic Back to the
                     student parent page. Works on hard refresh /
