@@ -65,6 +65,15 @@ export const CAN = {
     // Admin
     viewMembers:          (r) => isAdmin(r),
     manageSchool:         (r) => isAdmin(r),
+
+    // Copilot — read-only at-risk review (review_struggling_students v1).
+    // Same gate as createAssignment so the panel and its primary action
+    // stay aligned: anyone who can create an assignment can run the
+    // Copilot that drafts one. Server-side, the SAIL-core RPC additionally
+    // accepts platform-tier sail_* roles via the `copilot.read` perm —
+    // that path bypasses this matrix the same way `assignments.read`
+    // already does (per the file header).
+    useCopilot:           (r) => isStaff(r),
 }
 
 // ─── Route access by role ───────────────────────────────────────────────────
@@ -74,6 +83,7 @@ export function getAllowedRoutes(role) {
     if (CAN.viewDashboard(role))     routes.push('/')
     if (CAN.viewAssignments(role))   routes.push('/assignments')
     if (CAN.viewGradebook(role))     routes.push('/gradebook')
+    if (CAN.useCopilot(role))        routes.push('/copilot/review-struggling')
     if (CAN.viewMyAssignments(role)) routes.push('/my-assignments')
     if (CAN.viewOwnGrades(role))     routes.push('/my-grades')
     return routes

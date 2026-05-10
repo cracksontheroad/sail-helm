@@ -18,6 +18,7 @@ import BehaviourPage from './pages/Behaviour'
 import StudentPage from './pages/StudentPage'
 import StudentTimelinePage from './pages/StudentTimeline'
 import MyAssignmentsPage from './pages/MyAssignments'
+import CopilotReviewStruggling from './pages/CopilotReviewStruggling'
 
 /**
  * Banner shown across the top of Helm whenever the page was opened with
@@ -295,7 +296,10 @@ function App() {
                     <><Link to="/assignments">Assignments</Link> | </>
                 )}
                 {CAN.viewGradebook(role) && (
-                    <><Link to="/gradebook">Gradebook</Link></>
+                    <><Link to="/gradebook">Gradebook</Link> | </>
+                )}
+                {CAN.useCopilot(role) && (
+                    <><Link to="/copilot/review-struggling">Copilot · At-risk</Link></>
                 )}
                 {CAN.viewMyAssignments(role) && (
                     <><Link to="/my-assignments">My Assignments</Link> | </>
@@ -348,6 +352,19 @@ function App() {
                 <Route path="/schools/:schoolId/students/:studentId/timeline" element={<StudentTimelinePage />} />
                 {CAN.viewGradebook(role) && (
                     <Route path="/gradebook" element={<Gradebook />} />
+                )}
+                {/*
+                  Copilot · review_struggling_students v1.
+                  Read-only orchestration over deterministic at-risk
+                  signals. Gated on CAN.useCopilot (== isStaff). Server-
+                  side, the SAIL-core RPC additionally validates via
+                  is_staff_of_school OR has_permission('copilot.read'),
+                  so a non-school platform-tier user (sail_*) can also
+                  reach the surface — the route is open enough to let
+                  them through, the data layer enforces the rest.
+                */}
+                {CAN.useCopilot(role) && (
+                    <Route path="/copilot/review-struggling" element={<CopilotReviewStruggling />} />
                 )}
 
                 {/* Student routes */}
