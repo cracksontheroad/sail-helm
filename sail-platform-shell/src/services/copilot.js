@@ -110,14 +110,32 @@ export async function recordCopilotRead({
 
 /**
  * Compose existing primitives to act on a Copilot suggestion:
- *   1. bridge_create_assignment(class_id, title, desc) → assignmentId
- *   2. bridge_distribute_assignment(assignmentId, student_ids[]) → inserted count
+ *   1. bridge_create_assignment(class_id, title, desc, request_id?)
+ *      → assignmentId
+ *   2. bridge_distribute_assignment(assignmentId, student_ids[],
+ *      request_id?)
+ *      → inserted count
  *
  * Both RPCs already exist (Phases 6A/6C and B27.2) — we are NOT
  * modifying assignments or RLS. The targeting comes for free via
  * bridge_distribute_assignment.
+ *
+ * `requestId` is optional. When passed, the SAIL-core RPCs set the
+ * per-transaction GUC `app.copilot_request_id`, which the audit
+ * helper merges into the resulting `assignment.created` and
+ * `assignment.distributed` rows under `metadata.request_id`. That
+ * makes the Copilot ⟷ assignment audit JOIN deterministic on a
+ * single uuid (Migration 004 / 2026-05-10). If a caller omits
+ * `requestId`, the propagation does not happen and the legacy
+ * audit shape is preserved.
  */
-export async function createTargetedAssignment({ classId, title, description, studentIds }) {
+export async function createTargetedAssignment({
+    classId,
+    title,
+    description,
+    studentIds,
+    requestId = null,
+}) {
     if (!classId)                throw new Error('classId is required')
     if (!title || !title.trim()) throw new Error('title is required')
     if (!Array.isArray(studentIds) || studentIds.length === 0) {
@@ -128,6 +146,7 @@ export async function createTargetedAssignment({ classId, title, description, st
         p_class_id:    classId,
         p_title:       title,
         p_description: description || null,
+        p_request_id:  requestId,
     })
     if (createErr) throw createErr
     const created = Array.isArray(createRows) ? createRows[0] : createRows
@@ -138,6 +157,7 @@ export async function createTargetedAssignment({ classId, title, description, st
     const { data: insertedCount, error: distErr } = await supabase.rpc('bridge_distribute_assignment', {
         p_assignment_id: created.id,
         p_student_ids:   studentIds,
+        p_request_id:    requestId,
     })
     if (distErr) throw distErr
 

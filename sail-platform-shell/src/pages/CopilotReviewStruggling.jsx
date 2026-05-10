@@ -224,6 +224,11 @@ export default function CopilotReviewStruggling() {
                 title:       draft.title,
                 description: draft.description,
                 studentIds:  [suggestion.student_id],
+                // Forward the same uuid the suggestions fetch + audit row
+                // are stamped with — Migration 004 propagates this into
+                // the assignment.created and assignment.distributed audit
+                // rows so the Copilot ⟷ assignment JOIN is exact.
+                requestId,
             })
             // Audit the acceptance (best-effort) so analysts can see that
             // a Copilot suggestion was actually acted upon, not just
