@@ -106,6 +106,21 @@ export const CAN = {
     viewAttendance:       (r) => Boolean(r),
     markAttendance:       (r) => isStaff(r),
 
+    // Timeline — per-student unified event stream (PR D)
+    //
+    // viewTimeline: any school member. Staff see the per-student event
+    // stream under a class context (class selector → student selector
+    // → timeline). Students see their own timeline directly (no
+    // selectors). The helm_get_student_timeline RPC (migration M12)
+    // re-checks at the DB layer: caller is the student themselves OR
+    // admin of the student's school OR a teacher of a class they are
+    // enrolled in. Same permission gate as M11.
+    //
+    // Page is READ-ONLY. Resolve / mark-attendance / mark-submitted
+    // happen on their existing surfaces (Behaviour / Attendance /
+    // Assignments), not inline in the timeline.
+    viewTimeline:         (r) => Boolean(r),
+
     // Behaviour — per-student events (log + resolve, M11 wrapper read)
     //
     // viewBehaviour: any school member. Staff see the per-student

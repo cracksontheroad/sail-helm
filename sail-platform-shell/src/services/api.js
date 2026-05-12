@@ -581,28 +581,64 @@ export const behaviour = {
 
 // ─── Timeline ─────────────────────────────────────────────────────────────
 //
-// STUB (PR 0 only — populated by PR D).
+// Unified per-student event stream (attendance + behaviour + assignment
+// distributed + assignment graded). Backed by the M12 SECDEF wrapper
+// `helm_get_student_timeline` around `bridge_get_student_timeline`
+// (SECURITY INVOKER + joins auth.users for actor enrichment → 42501
+// for an authenticated client). Permission re-checked server-side:
+// caller is self OR admin-of-school OR teacher-of-shared-class.
 //
-// Will wrap `bridge_get_student_timeline` (currently SECURITY INVOKER —
-// needs a Helm SECDEF wrapper, migration M11, before this can be safely
-// called from an authenticated student client). The timeline UI also
-// uses `resolvePrimaryAction.js` + `timelineTelemetry.js` (ports from
-// the copilot prototype) which sit outside this file.
+// The `meta` jsonb is opaque at this layer — the UI decides what to
+// render per event type. Do not normalize or reshape it here.
 
 export const timeline = {
-    // Intentionally empty. PR D populates: getForStudent and any
-    // companion read-side wrappers added by M11.
+    /**
+     * (Helm SECDEF wrapper, M12) Fetch one student's unified event
+     * stream. Returns rows sorted server-side by ts DESC.
+     * @param {object} args
+     * @param {string} args.studentUserId
+     * @param {string} args.schoolId
+     * @param {number} [args.limit=50]
+     * @param {string|null} [args.beforeTs=null]  ISO timestamp; null = no cursor
+     *
+     * Row shape: { type, ts, title, meta jsonb }
+     * `type` ∈ {attendance, behaviour, assignment_assigned, assignment_graded}.
+     */
+    getForStudent: ({ studentUserId, schoolId, limit = 50, beforeTs = null }) =>
+        supabase.rpc('helm_get_student_timeline', {
+            p_student_id: studentUserId,
+            p_school_id:  schoolId,
+            p_limit:      limit,
+            p_before_ts:  beforeTs,
+        }),
 }
 
 // ─── Students ─────────────────────────────────────────────────────────────
 //
-// STUB (PR 0 only — populated by PR D).
+// Minimal student-entity reads. Currently one method: get the student
+// detail header (name, role, joined_at) for surfaces that need to show
+// "who am I looking at" (Timeline page).
 //
-// Will wrap a minimal student-detail read (currently `getStudentInSchool`
-// in the copilot prototype, RPC name TBD on port).
+// Backed by the M12 SECDEF wrapper `helm_get_student_in_school` around
+// `bridge_get_student_in_school` (SECURITY INVOKER + joins auth.users
+// for email/full_name → 42501 for an authenticated client). Permission
+// re-checked server-side under the same rule as timeline.
 
 export const students = {
-    // Intentionally empty. PR D populates: get.
+    /**
+     * (Helm SECDEF wrapper, M12) Get a student's detail header.
+     * @param {object} args
+     * @param {string} args.studentUserId
+     * @param {string} args.schoolId
+     *
+     * Row shape: { user_id, full_name, email, role, joined_at }.
+     * Returns at most one row.
+     */
+    get: ({ studentUserId, schoolId }) =>
+        supabase.rpc('helm_get_student_in_school', {
+            p_student_user_id: studentUserId,
+            p_school_id:       schoolId,
+        }),
 }
 
 // ─── Auth (session primitives) ────────────────────────────────────────────
