@@ -17,6 +17,7 @@ import Members from './pages/Members'
 import Settings from './pages/Settings'
 import Courses from './pages/Courses'
 import Attendance from './pages/Attendance'
+import CopilotReviewStruggling from './pages/CopilotReviewStruggling'
 
 /**
  * Banner shown across the top of Helm whenever the page was opened with
@@ -266,6 +267,9 @@ function App() {
                 {CAN.viewAttendance(role) && (
                     <><Link to="/attendance">Attendance</Link> | </>
                 )}
+                {CAN.useCopilot(role) && (
+                    <><Link to="/copilot/review-struggling">Copilot</Link> | </>
+                )}
                 {CAN.viewMembers(role) && (
                     <><Link to="/members">Members</Link> | </>
                 )}
@@ -295,6 +299,9 @@ function App() {
                 )}
                 {CAN.viewAttendance(role) && (
                     <Route path="/attendance" element={<Attendance />} />
+                )}
+                {CAN.useCopilot(role) && (
+                    <Route path="/copilot/review-struggling" element={<CopilotReviewStruggling />} />
                 )}
                 {CAN.viewMembers(role) && (
                     <Route path="/members" element={<Members />} />
