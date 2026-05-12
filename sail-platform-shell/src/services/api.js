@@ -356,6 +356,118 @@ export const attendance = {
         supabase.rpc('list_student_attendance', { p_class_id: classId }),
 }
 
+// ─── Copilot ──────────────────────────────────────────────────────────────
+//
+// AI-orchestration surface. The risk model is deterministic and lives
+// server-side; the UI just renders suggestions and emits a paired audit
+// row. CARVE-OUT: these are Bridge-direct calls (`bridge_copilot_*` is
+// already SECDEF). Helm does NOT wrap them.
+//
+// Bootstrap (PR 0): wires `reviewStruggling` + `recordRead` + the
+// `newRequestId` pure helper. PR A will consume these from the
+// `/copilot/review-struggling` page. The Copilot prototype's design
+// constraints (deterministic risk scoring, first-name + last-initial
+// PII discipline, fire-and-forget audit) carry over.
+
+export const copilot = {
+    /**
+     * (Bridge direct) Generate deterministic at-risk-student suggestions
+     * for a class. Risk band ∈ {high, medium, low}; recommended_action ∈
+     * {invite_to_review, suggest_reteaching, assign_drill, none}.
+     * Caller must be a teacher of the class or hold copilot.read.
+     * @param {object} args
+     * @param {string} args.schoolId
+     * @param {string} args.classId
+     * @param {number} [args.windowDays=14]  1..90
+     * @param {number} [args.threshold=0.6]  0.0..1.0 — ceil(threshold*3)
+     *                                       is the min signal count to surface.
+     */
+    reviewStruggling: ({ schoolId, classId, windowDays = 14, threshold = 0.6 }) =>
+        supabase.rpc('bridge_copilot_review_struggling', {
+            p_school_id:   schoolId,
+            p_class_id:    classId,
+            p_window_days: windowDays,
+            p_threshold:   threshold,
+        }),
+
+    /**
+     * (Bridge direct) Audit-log a copilot read event. Same `requestId`
+     * as the paired `reviewStruggling` call so analysts can JOIN
+     * ai_requests ↔ audit_logs. Caller MUST treat failures as
+     * non-fatal — a stuck audit RPC must never block the workflow.
+     * @param {object} args
+     * @param {string} args.intentKey                e.g. 'review_struggling_students'
+     * @param {string} args.requestId                uuid; reuse the suggestions call's id
+     * @param {string} args.schoolId
+     * @param {string} args.targetClassId
+     * @param {string[]} args.targetStudentIds       uuids
+     */
+    recordRead: ({ intentKey, requestId, schoolId, targetClassId, targetStudentIds }) =>
+        supabase.rpc('bridge_record_copilot_read', {
+            p_intent_key:         intentKey,
+            p_request_id:         requestId,
+            p_school_id:          schoolId,
+            p_target_class_id:    targetClassId,
+            p_target_student_ids: targetStudentIds,
+        }),
+
+    /**
+     * Generate a fresh request_id for a single Copilot run. Pure helper;
+     * not a network call. Same uuid is reused by both the suggestions
+     * call and the audit row.
+     */
+    newRequestId: () => {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID()
+        }
+        // Defensive fallback for non-browser test environments without
+        // a crypto polyfill. Real browsers all have crypto.randomUUID.
+        return '00000000-0000-0000-0000-' + Date.now().toString(16).padStart(12, '0')
+    },
+}
+
+// ─── Behaviour ────────────────────────────────────────────────────────────
+//
+// STUB (PR 0 only — populated by PR C).
+//
+// Will wrap `bridge_log_behaviour_event` (SECDEF, ready) and
+// `bridge_resolve_behaviour_event` (SECDEF, ready), plus whatever the
+// list RPC turns out to be (the copilot prototype called a function
+// named `listBehaviourForStudent`; the exact RPC name needs to be
+// confirmed before wiring — `bridge_list_behaviour_events` was NOT
+// found on the live DB at PR 0 time).
+
+export const behaviour = {
+    // Intentionally empty. PR C populates: logEvent, resolveEvent,
+    // listForStudent.
+}
+
+// ─── Timeline ─────────────────────────────────────────────────────────────
+//
+// STUB (PR 0 only — populated by PR D).
+//
+// Will wrap `bridge_get_student_timeline` (currently SECURITY INVOKER —
+// needs a Helm SECDEF wrapper, migration M11, before this can be safely
+// called from an authenticated student client). The timeline UI also
+// uses `resolvePrimaryAction.js` + `timelineTelemetry.js` (ports from
+// the copilot prototype) which sit outside this file.
+
+export const timeline = {
+    // Intentionally empty. PR D populates: getForStudent and any
+    // companion read-side wrappers added by M11.
+}
+
+// ─── Students ─────────────────────────────────────────────────────────────
+//
+// STUB (PR 0 only — populated by PR D).
+//
+// Will wrap a minimal student-detail read (currently `getStudentInSchool`
+// in the copilot prototype, RPC name TBD on port).
+
+export const students = {
+    // Intentionally empty. PR D populates: get.
+}
+
 // ─── Auth (session primitives) ────────────────────────────────────────────
 //
 // CARVE-OUT — these aren't domain RPCs, they're session primitives.
@@ -391,6 +503,10 @@ const api = {
     classes,
     assignments,
     attendance,
+    copilot,
+    behaviour,
+    timeline,
+    students,
     auth,
 }
 
