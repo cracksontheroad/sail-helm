@@ -31,12 +31,12 @@ name: e2e
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, helm/integration]
     paths:
       - 'sail-platform-shell/**'
       - '.github/workflows/e2e.yml'
   push:
-    branches: [main]
+    branches: [main, helm/integration]
     paths:
       - 'sail-platform-shell/**'
       - '.github/workflows/e2e.yml'
