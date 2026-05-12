@@ -6,19 +6,17 @@ import {
     impersonatedUserId,
     impersonationSessionId,
     impersonationRedirect,
-    supabase,
 } from './lib/supabaseClient'
+import api from './services/api'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Assignments from './pages/Assignments'
 import Gradebook from './pages/Gradebook'
-import ClassPage from './pages/Class'
-import AttendancePage from './pages/Attendance'
-import BehaviourPage from './pages/Behaviour'
-import StudentPage from './pages/StudentPage'
-import StudentTimelinePage from './pages/StudentTimeline'
-import MyAssignmentsPage from './pages/MyAssignments'
-import CopilotReviewStruggling from './pages/CopilotReviewStruggling'
+import Provisioning from './pages/Provisioning'
+import Members from './pages/Members'
+import Settings from './pages/Settings'
+import Courses from './pages/Courses'
+import Attendance from './pages/Attendance'
 
 /**
  * Banner shown across the top of Helm whenever the page was opened with
@@ -42,10 +40,7 @@ async function exitImpersonation() {
     // (e.g. legacy hand-crafted link) — the RPC accepts NULL and just
     // logs a partial row; better than failing the exit flow.
     try {
-        await supabase.rpc('bridge_stop_impersonation', {
-            p_target_user_id: impersonatedUserId,
-            p_session_id:     impersonationSessionId,
-        })
+        await api.auth.stopImpersonation(impersonatedUserId, impersonationSessionId)
     } catch (err) {
         // eslint-disable-next-line no-console
         console.error('[impersonation] stop audit failed', err)
@@ -122,59 +117,6 @@ function ImpersonationBanner({ email, role, realUserEmail }) {
     )
 }
 
-/**
- * Transient confirmation that an impersonation session ended.
- *
- * Surfaces only when AuthContext's polling loop detects the server now
- * reports `is_impersonating: false` while we previously thought we were
- * impersonating. The banner has already disappeared by this point —
- * this toast is the "what just happened" cue so the operator isn't
- * confused by the silent UI change. Auto-dismissed by AuthContext after
- * 5 s; the X button calls `dismissImpersonationEnded` for instant clear.
- */
-function ImpersonationEndedToast({ onDismiss }) {
-    return (
-        <div
-            role="status"
-            aria-live="polite"
-            style={{
-                position: 'fixed',
-                top: 16,
-                right: 16,
-                zIndex: 9999,
-                background: '#e6f4ea',
-                color: '#1e6b3a',
-                border: '1px solid #b6d8c1',
-                borderRadius: 6,
-                padding: '8px 12px',
-                fontSize: 13,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-            }}
-        >
-            <span>Impersonation ended — viewing as yourself.</span>
-            <button
-                type="button"
-                onClick={onDismiss}
-                aria-label="Dismiss"
-                style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: '#1e6b3a',
-                    cursor: 'pointer',
-                    fontSize: 16,
-                    lineHeight: 1,
-                    padding: 0,
-                }}
-            >
-                ×
-            </button>
-        </div>
-    )
-}
-
 function App() {
     const {
         user,
@@ -189,11 +131,6 @@ function App() {
         isImpersonating,
         email,
         realUserEmail,
-        // Awareness-loop signal: flips true when the polling tick
-        // detects the session was ended server-side; auto-clears after
-        // 5s. Renders the small "Impersonation ended" toast below.
-        impersonationEnded,
-        dismissImpersonationEnded,
     } = useAuth()
     const navigate = useNavigate()
     // Guard so the deep-link redirect fires exactly once per page load.
@@ -231,15 +168,43 @@ function App() {
         return <Login />
     }
 
-    // Logged in but no role found in school_members
+    // Logged in but no role found in school_members.
+    //
+    // Phase 1 Route 2 (HELM_REBUILD_PLAN.md §3, planner 2026-05-12):
+    // unprovisioned users are routed into the provisioning flow rather
+    // than dead-ended on an "Account not configured" screen. The
+    // Provisioning page itself re-checks CAN.provisionSchool(role) and
+    // hard-blocks if the caller is not allowed. We render a minimal
+    // Routes block here so deep links and the catch-all redirect both
+    // work cleanly.
     if (!role) {
         return (
             <div style={{ padding: 20 }}>
-                <h2>Account not configured</h2>
-                <p>Your account exists but has no role assigned in any school.</p>
-                <p>Contact your school administrator to be added as a teacher, student, or admin.</p>
-                <br />
-                <button onClick={signOut}>Sign Out</button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h1>SAIL Platform</h1>
+                    <div style={{ fontSize: '0.9em', color: '#666' }}>
+                        {user.email}
+                        {' '}
+                        <button
+                            onClick={signOut}
+                            style={{
+                                background: 'none',
+                                border: '1px solid #ccc',
+                                padding: '3px 10px',
+                                borderRadius: 4,
+                                cursor: 'pointer',
+                                fontSize: '0.9em',
+                            }}
+                        >
+                            Sign Out
+                        </button>
+                    </div>
+                </div>
+                <hr />
+                <Routes>
+                    <Route path="/provisioning" element={<Provisioning />} />
+                    <Route path="*" element={<Navigate to="/provisioning" replace />} />
+                </Routes>
             </div>
         )
     }
@@ -254,9 +219,6 @@ function App() {
                     role={role}
                     realUserEmail={realUserEmail}
                 />
-            )}
-            {impersonationEnded && (
-                <ImpersonationEndedToast onDismiss={dismissImpersonationEnded} />
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h1>SAIL Platform</h1>
@@ -292,19 +254,25 @@ function App() {
                 {CAN.viewDashboard(role) && (
                     <><Link to="/">Dashboard</Link> | </>
                 )}
+                {CAN.viewCourses(role) && (
+                    <><Link to="/courses">Courses</Link> | </>
+                )}
                 {CAN.viewAssignments(role) && (
                     <><Link to="/assignments">Assignments</Link> | </>
                 )}
                 {CAN.viewGradebook(role) && (
                     <><Link to="/gradebook">Gradebook</Link> | </>
                 )}
-                {CAN.useCopilot(role) && (
-                    <><Link to="/copilot/review-struggling">Copilot · At-risk</Link></>
+                {CAN.viewAttendance(role) && (
+                    <><Link to="/attendance">Attendance</Link> | </>
                 )}
-                {CAN.viewMyAssignments(role) && (
-                    <><Link to="/my-assignments">My Assignments</Link> | </>
+                {CAN.viewMembers(role) && (
+                    <><Link to="/members">Members</Link> | </>
                 )}
-                {role === 'student' && (
+                {CAN.manageSchool(role) && (
+                    <><Link to="/settings">Settings</Link></>
+                )}
+                {CAN.viewOwnGrades(role) && (
                     <><Link to="/my-grades">My Grades</Link></>
                 )}
             </nav>
@@ -316,70 +284,26 @@ function App() {
                 {CAN.viewDashboard(role) && (
                     <Route path="/" element={<Dashboard />} />
                 )}
+                {CAN.viewCourses(role) && (
+                    <Route path="/courses" element={<Courses />} />
+                )}
                 {CAN.viewAssignments(role) && (
                     <Route path="/assignments" element={<Assignments />} />
                 )}
-                {/*
-                  Phase 6D: per-class teacher surface. Route is open to
-                  any authenticated member with a school role — RLS on
-                  classes / assignments / student_assignments enforces
-                  what's actually visible (same-school-member SELECT,
-                  staff-only writes via the RPC's own gate). Students
-                  hitting this URL see the page in read-only mode (no
-                  Create button renders because CAN.createAssignment is
-                  false for student).
-                */}
-                <Route path="/class/:classId" element={<ClassPage />} />
-                {/* Phase A — attendance vertical. Same RLS posture as
-                    /class/:classId: any school member can land on the
-                    page; only staff can mark (the bridge_create_*
-                    RPC's own gate enforces that, the page renders
-                    read-only for non-staff). */}
-                <Route path="/class/:classId/attendance" element={<AttendancePage />} />
-                {/* Phase A — behaviour vertical. Same RLS posture as
-                    /attendance: any school member can land on the
-                    page; only staff can log via the RPC's gate. */}
-                <Route path="/class/:classId/behaviour" element={<BehaviourPage />} />
-                {/* Phase D — Student parent + Timeline pair routes.
-                    The parent page is intentionally minimal (header +
-                    "View Timeline" link); it exists so the timeline's
-                    "Back to student" has a deterministic target and
-                    operator surfaces (Attendance, Gradebook, Class
-                    submissions) have a single canonical "View Student"
-                    destination. Both routes derive all data from URL
-                    params — deep-linkable, refresh-safe. */}
-                <Route path="/schools/:schoolId/students/:studentId" element={<StudentPage />} />
-                <Route path="/schools/:schoolId/students/:studentId/timeline" element={<StudentTimelinePage />} />
                 {CAN.viewGradebook(role) && (
                     <Route path="/gradebook" element={<Gradebook />} />
                 )}
-                {/*
-                  Copilot · review_struggling_students v1.
-                  Read-only orchestration over deterministic at-risk
-                  signals. Gated on CAN.useCopilot (== isStaff). Server-
-                  side, the SAIL-core RPC additionally validates via
-                  is_staff_of_school OR has_permission('copilot.read'),
-                  so a non-school platform-tier user (sail_*) can also
-                  reach the surface — the route is open enough to let
-                  them through, the data layer enforces the rest.
-                */}
-                {CAN.useCopilot(role) && (
-                    <Route path="/copilot/review-struggling" element={<CopilotReviewStruggling />} />
+                {CAN.viewAttendance(role) && (
+                    <Route path="/attendance" element={<Attendance />} />
+                )}
+                {CAN.viewMembers(role) && (
+                    <Route path="/members" element={<Members />} />
+                )}
+                {CAN.manageSchool(role) && (
+                    <Route path="/settings" element={<Settings />} />
                 )}
 
-                {/* Student routes */}
-                {/*
-                  Phase 6E: /my-assignments is the student's primary
-                  surface. Lists every assignment in their school,
-                  shows submission status per row, accepts inline
-                  submissions via bridge_submit_assignment. RLS
-                  filters submissions to the caller's own rows so
-                  there's no cross-student visibility risk even if
-                  a non-student lands here.
-                */}
-                {CAN.viewMyAssignments(role) && (
-                    <Route path="/my-assignments" element={<MyAssignmentsPage />} />
-                )}
+                {/* Student routes (placeholder for now) */}
                 {CAN.viewOwnGrades(role) && (
                     <Route path="/my-grades" element={
                         <div>
@@ -387,6 +311,13 @@ function App() {
                             <p>Student grade view coming soon.</p>
                         </div>
                     } />
+                )}
+
+                {/* Provisioning — available to anyone CAN.provisionSchool admits.
+                    The page re-validates and hard-blocks if the caller is
+                    not actually permitted. */}
+                {CAN.provisionSchool(role) && (
+                    <Route path="/provisioning" element={<Provisioning />} />
                 )}
 
                 {/* Catch-all → redirect to role-appropriate default */}

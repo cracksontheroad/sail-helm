@@ -1,39 +1,39 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = 'https://gidyonbzxjorrgpicctt.supabase.co'
-const supabaseKey = 'sb_publishable_9gCdvH0NEcmkCf_IKuWTvg_vZLpfJ-r'
+// Read from Vite env (inlined at build time). Local dev: copy
+// `.env.example` → `.env` (or `.env.local`) and fill in values. CI:
+// `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` GitHub secrets passed
+// to the Build step in `.github/workflows/e2e.yml`.
+//
+// No literal fallback — a missing value MUST fail loudly. A silent
+// fallback would mask deploy-config bugs and let a misconfigured build
+// silently point at the wrong project.
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+if (!supabaseUrl || !supabaseKey) {
+    throw new Error(
+        '[supabaseClient] Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. ' +
+        'Copy sail-platform-shell/.env.example to .env (or .env.local) and ' +
+        'fill in the values. In CI, configure the GitHub repo secrets and ' +
+        'pass them to the Build step.',
+    )
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Read-only impersonation context (Phase 1)
 // ───────────────────────────────────────────────────────────────────────────
 //
-// Bridge can launch Helm with `?impersonate=<user-uuid>&session=<session-uuid>`.
-// We read both on page load and inject TWO headers on every Supabase request
-// via supabase-js `global.headers`:
-//
-//   x-impersonate-user-id        — the target user's uuid
-//   x-impersonation-session-id   — the audit session uuid Bridge minted
-//
-// Both are required. PostgREST exposes them to Postgres via
-// `current_setting('request.headers', true)`, where SAIL-core's
-// `public.get_impersonation_user_id()` validates them against audit_logs:
-// the gate only honours the lens when a matching impersonation.started
-// audit row exists (same session_id, same target, actor_id = auth.uid())
-// AND no impersonation.stopped row has been written for that session_id.
-// "No audit log = no impersonation" is the runtime invariant.
-//
-// What this means in practice:
-//   * Bridge clicks "End" → audit_logs gets a stopped row → the next
-//     Helm request returns NULL from the gate → effective_user_id()
-//     falls back to auth.uid() → banner auto-disappears, lens lifts.
-//   * A hand-crafted ?impersonate=<uuid>&session=<garbage> URL produces
-//     no impersonation: validation fails, gate returns NULL.
-//   * A legitimate Bridge-launched URL on a non-superadmin session also
-//     produces no impersonation: is_sail_internal() check fails first.
+// Bridge can launch Helm with `?impersonate=<user-uuid>`. We read that on
+// page load and inject `x-impersonate-user-id` on every Supabase request via
+// supabase-js `global.headers`. PostgREST exposes the header to Postgres
+// via `current_setting('request.headers', true)`, where SAIL-core's
+// `public.get_impersonation_user_id()` reads it (gated by is_sail_internal
+// — only Bridge superadmin sessions can ever cause an effective_user_id()
+// switch).
 //
 // Important:
 //   * We DO NOT mint a custom session. The admin's real Supabase session is
-//     what's authenticating this client; the headers just signal intent.
+//     what's authenticating this client; the header just signals intent.
 //   * We do NOT persist the impersonation id. It lives in module memory
 //     for the life of this tab. Closing the tab ends impersonation.
 //   * Phase 1 ships with a CLIENT-SIDE mutation lock (see below) as a
@@ -109,30 +109,17 @@ function readRedirectParam() {
 }
 
 const impersonateUserId = readImpersonateParam()
-const impersonateSessionId = readSessionParam()
-// URL flag: do we *intend* to impersonate? Server still has the final
-// say (the audit-log validation in get_impersonation_user_id() can veto
-// us). We require BOTH params before injecting headers because the
-// server gate now requires both — sending only one would just produce
-// a request the server rejects, with no UX benefit.
-const hasFullImpersonationIntent = Boolean(impersonateUserId && impersonateSessionId)
-
-export const isImpersonating          = hasFullImpersonationIntent
+export const isImpersonating          = Boolean(impersonateUserId)
 export const impersonatedUserId       = impersonateUserId
-export const impersonationSessionId   = impersonateSessionId
+export const impersonationSessionId   = readSessionParam()
 export const impersonationRedirect    = readRedirectParam()
 
 // Build the client. supabase-js merges `global.headers` into every fetch,
-// so the impersonation headers ride along with auth headers automatically.
-// We send BOTH x-impersonate-user-id and x-impersonation-session-id; the
-// server gate requires the pair to validate against audit_logs.
+// so the impersonation header rides along with auth headers automatically.
 const baseClient = createClient(supabaseUrl, supabaseKey, {
     global: {
-        headers: hasFullImpersonationIntent
-            ? {
-                'x-impersonate-user-id':       impersonateUserId,
-                'x-impersonation-session-id':  impersonateSessionId,
-              }
+        headers: impersonateUserId
+            ? { 'x-impersonate-user-id': impersonateUserId }
             : {},
     },
 })
@@ -173,6 +160,6 @@ function wrapWithReadOnlyGuard(client) {
     return client
 }
 
-export const supabase = hasFullImpersonationIntent
+export const supabase = isImpersonating
     ? wrapWithReadOnlyGuard(baseClient)
     : baseClient

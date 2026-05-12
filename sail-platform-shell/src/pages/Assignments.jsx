@@ -1,789 +1,707 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { supabase } from '../lib/supabaseClient'
+import { useState, useEffect, useCallback, Fragment } from 'react'
+import api from '../services/api'
 import { useAuth } from '../lib/AuthContext'
-import { callAI } from '../services/ai'
-// B27.2 — write-path service helpers replacing direct supabase.from(...)
-// .insert / .update calls. Each wraps a SECURITY DEFINER bridge_* RPC
-// with permission gates + audit emission.
-import {
-    createAssignment as createAssignmentRpc,
-    distributeAssignment,
-    markSubmissionReceived,
-    gradeSubmission,
-    recordAiGrade,
-} from '../services/assignments'
+import { CAN } from '../lib/permissions'
 
-// ─── Configuration ──────────────────────────────────────────────────────────
-const BATCH_SIZE = 5                      // students per batch when grading entire class
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-// Simple hash for submission change detection (not crypto — just cache‑busting)
-function simpleHash(str) {
-    if (!str) return ''
-    let h = 0
-    for (let i = 0; i < str.length; i++) {
-        h = ((h << 5) - h + str.charCodeAt(i)) | 0
-    }
-    return String(h)
-}
-
-// Parse feedback stored as JSON; fall back gracefully for legacy plain-text values
-function parseFeedback(raw) {
-    if (!raw) return null
-    try {
-        return JSON.parse(raw)
-    } catch {
-        return { overall: raw, rubric: null }
-    }
-}
-
-const RUBRIC_CRITERIA = ['structure', 'argument', 'grammar', 'clarity']
-
-// ─── AI grading call (via backend proxy) ────────────────────────────────────
-
-const GRADING_SYSTEM_PROMPT =
-    'You are a strict but fair educational grading assistant. ' +
-    'Always respond with valid JSON and nothing else. ' +
-    'Be consistent: the same submission must always receive the same grade.'
-
-function buildGradingPrompt(assignmentTitle, submission) {
-    return (
-        `Grade the following student submission for the assignment titled "${assignmentTitle}".\n\n` +
-        `Submission:\n"${submission}"\n\n` +
-        `Score using these four criteria (each out of 10):\n` +
-        `- structure: organisation, introduction, body, conclusion\n` +
-        `- argument: quality of reasoning and evidence\n` +
-        `- grammar: spelling, punctuation, sentence structure\n` +
-        `- clarity: how clearly ideas are expressed\n\n` +
-        `Respond with this exact JSON shape:\n` +
-        `{\n` +
-        `  "suggested_grade": "<A/B/C/D/F>",\n` +
-        `  "overall": "<2–3 sentence overall comment>",\n` +
-        `  "rubric": {\n` +
-        `    "structure": { "score": "<n>/10", "comment": "<one sentence>" },\n` +
-        `    "argument":  { "score": "<n>/10", "comment": "<one sentence>" },\n` +
-        `    "grammar":   { "score": "<n>/10", "comment": "<one sentence>" },\n` +
-        `    "clarity":   { "score": "<n>/10", "comment": "<one sentence>" }\n` +
-        `  }\n` +
-        `}`
-    )
-}
-
-async function gradeWithAI(assignmentTitle, submission, identity = {}) {
-    return callAI({
-        system: GRADING_SYSTEM_PROMPT,
-        prompt: buildGradingPrompt(assignmentTitle, submission),
-        maxTokens: 600,
-        feature: 'grading',
-        userId: identity.userId ?? null,
-        role: identity.role ?? null,
-        schoolId: identity.schoolId ?? null,
-        deploymentMode: identity.deploymentMode ?? null,
-    })
-}
-
-// ─── Component ──────────────────────────────────────────────────────────────
-
+/**
+ * Assignments — Phase 2 Route 2 of the Helm rebuild.
+ *
+ * Spec contract: HELM_PHASE_2_SPEC.md §3.2 (locked 2026-05-12).
+ *
+ * Replaces the v6-lite stub. The previous file did direct .from()
+ * writes against `assignments` / `student_assignments`, embedded AI
+ * grading (Route 3 territory), and used optimistic mutations — all
+ * three are forbidden under the Phase 2 contract.
+ *
+ * Architecture:
+ *   - Reads: SECURITY DEFINER RPCs (`list_school_classes`,
+ *     `list_class_assignments`). Clients never select from
+ *     `assignments` / `student_assignments` / `class_enrollments`
+ *     directly.
+ *   - Writes: `create_assignment`, `update_assignment`,
+ *     `delete_assignment`, `distribute_assignment`, `submit_assignment`.
+ *     Server is the truth — every mutation re-fetches before re-render.
+ *   - Role surface: teachers / admins see staff controls; students see
+ *     a submission textarea. Same component renders both, gated by
+ *     CAN.* + the per-row `my_status` from `list_class_assignments`.
+ *   - No grading UI (Route 3).
+ */
 export default function Assignments() {
-    const { user, role, schoolId } = useAuth()
-    const deploymentMode = import.meta.env.VITE_DEPLOYMENT_MODE ?? null
+    const { role, schoolId } = useAuth()
 
     const [classes, setClasses] = useState([])
+    const [selectedClassId, setSelectedClassId] = useState('')
     const [assignments, setAssignments] = useState([])
-    const [students, setStudents] = useState([])
-    const [selectedClass, setSelectedClass] = useState('')
-    const [selectedAssignment, setSelectedAssignment] = useState('')
-    const [newTitle, setNewTitle] = useState('')
-    const [assigning, setAssigning] = useState(false)
 
-    // { student_id -> student_assignment row }
-    const [studentAssignments, setStudentAssignments] = useState({})
-    // { student_id -> grade string }
-    const [gradeInputs, setGradeInputs] = useState({})
-    // { student_id -> bool }
-    const [aiLoading, setAiLoading] = useState({})
+    // 'idle' | 'loading' | 'ready' | 'error'
+    const [classesStatus, setClassesStatus] = useState('idle')
+    const [classesError, setClassesError]   = useState(null)
+    const [aStatus, setAStatus] = useState('idle')
+    const [aError, setAError]   = useState(null)
 
-    // Batch grading state
-    const [batchGrading, setBatchGrading] = useState(false)
-    const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0, skipped: 0, failed: 0 })
-    // { student_id -> error message } — surfaces real failure causes per-row
-    const [rowErrors, setRowErrors] = useState({})
+    const [expandedId, setExpandedId] = useState(null)
 
-    // Derived counts for the diagnostics panel and the "nothing to grade" alert.
-    // Keeps the breakdown reasons in one place so UI and alert never disagree.
-    const gradingStats = useMemo(() => {
-        let noRow = 0, withAiGrade = 0, withTeacherGrade = 0, eligible = 0
-        for (const s of students) {
-            const sa = studentAssignments[s.id]
-            if (!sa) { noRow++; continue }
-            const hasAi = sa.ai_grade != null && sa.ai_grade !== ''
-            const hasTeacher = sa.grade != null && sa.grade !== ''
-            if (hasAi) withAiGrade++
-            if (hasTeacher) withTeacherGrade++
-            if (!hasAi && !hasTeacher) eligible++
-        }
-        return {
-            students: students.length,
-            rows: Object.keys(studentAssignments).length,
-            noRow,
-            withAiGrade,
-            withTeacherGrade,
-            eligible,
-        }
-    }, [students, studentAssignments])
-
-    useEffect(() => {
-        if (schoolId) loadClasses()
-    }, [schoolId])
-
-    useEffect(() => {
-        if (selectedClass) {
-            loadAssignments()
-            loadStudents()
-        } else {
-            setAssignments([])
-            setStudents([])
-            setSelectedAssignment('')
-        }
-    }, [selectedClass])
-
-    useEffect(() => {
-        if (selectedAssignment) {
-            loadStudentAssignments()
-        } else {
-            setStudentAssignments({})
-            setGradeInputs({})
-        }
-    }, [selectedAssignment])
-
-    // ── B27.1 read-path consolidation (2026-05-08) ─────────────────────
-    // All reads in this page now go through Core RPCs instead of
-    // `supabase.from(...)`. Same RLS posture (the new RPCs are thin
-    // LANGUAGE sql STABLE wrappers, no SECURITY DEFINER), uniform with
-    // Bridge. The previous loadStudents had to chain school_members →
-    // profiles to compose names; bridge_list_class_students returns
-    // full_name server-side from the same profile/auth join, so two
-    // round-trips collapse into one.
-
-    async function loadClasses() {
-        if (!schoolId) {
-            setClasses([])
-            return
-        }
-        const { data, error } = await supabase.rpc('bridge_list_classes', {
-            p_school_id: schoolId,
-        })
+    const loadClasses = useCallback(async () => {
+        if (!schoolId) return
+        setClassesStatus('loading')
+        setClassesError(null)
+        const { data, error } = await api.classes.list(schoolId)
         if (error) {
-            console.error('[loadClasses] bridge_list_classes failed:', error.message)
+            setClassesError(error.message || 'Could not load classes.')
+            setClassesStatus('error')
+            return
         }
         setClasses(data || [])
-    }
+        setClassesStatus('ready')
+        // Auto-select the first class on first load to save a click.
+        if ((data || []).length > 0 && !selectedClassId) {
+            setSelectedClassId(data[0].class_id)
+        }
+    }, [schoolId, selectedClassId])
 
-    async function loadAssignments() {
-        if (!selectedClass) {
+    const loadAssignments = useCallback(async () => {
+        if (!selectedClassId) {
             setAssignments([])
+            setAStatus('idle')
             return
         }
-        const { data, error } = await supabase.rpc('bridge_list_assignments', {
-            p_class_id: selectedClass,
-        })
+        setAStatus('loading')
+        setAError(null)
+        const { data, error } = await api.assignments.list(selectedClassId)
         if (error) {
-            console.error('[loadAssignments] bridge_list_assignments failed:', error.message)
+            setAError(error.message || 'Could not load assignments.')
+            setAStatus('error')
+            return
         }
         setAssignments(data || [])
-    }
+        setAStatus('ready')
+    }, [selectedClassId])
 
-    async function loadStudents() {
-        if (!selectedClass) {
-            setStudents([])
-            return
-        }
-        // bridge_list_class_students returns the role='student' members
-        // of the class's parent school with full_name pre-composed
-        // server-side. RLS on school_members narrows to the caller's
-        // visibility (teacher of school sees own school's students;
-        // student sees only same-school members per RLS; sail tier sees
-        // all). Replaces the previous school_members → profiles chain.
-        const { data, error } = await supabase.rpc('bridge_list_class_students', {
-            p_class_id: selectedClass,
-        })
-        if (error) {
-            console.error('[loadStudents] bridge_list_class_students failed:', error.message)
-        }
-        const formatted = (data || []).map(r => ({
-            id:   r.user_id,
-            name: r.full_name || r.email || r.user_id,
-        }))
-        console.log(`[loadStudents] class_id=${selectedClass} → ${formatted.length} students`)
-        setStudents(formatted)
-    }
+    useEffect(() => { loadClasses() }, [loadClasses])
+    useEffect(() => { loadAssignments() }, [loadAssignments])
 
-    async function loadStudentAssignments() {
-        if (!selectedAssignment) {
-            setStudentAssignments({})
-            setGradeInputs({})
-            return
-        }
-        const { data, error } = await supabase.rpc('bridge_list_submissions', {
-            p_assignment_id: selectedAssignment,
-        })
-        if (error) {
-            console.error(
-                `[loadStudentAssignments] bridge_list_submissions failed for assignment_id=${selectedAssignment}:`,
-                error.message,
-            )
-        }
-        console.log(
-            `[loadStudentAssignments] assignment_id=${selectedAssignment} → ${data?.length ?? 0} rows`,
-            (data || []).map(r => ({ student_id: r.student_id, ai_grade: r.ai_grade, grade: r.grade, status: r.status })),
+    if (!CAN.viewAssignments(role)) {
+        return (
+            <div>
+                <h2>Assignments</h2>
+                <p>You do not have access to this page.</p>
+            </div>
         )
-
-        const map = {}
-        const grades = {}
-        for (const row of (data || [])) {
-            map[row.student_id] = row
-            grades[row.student_id] = row.grade ?? ''
-        }
-        setStudentAssignments(map)
-        setGradeInputs(grades)
+    }
+    if (!schoolId) {
+        return (
+            <div>
+                <h2>Assignments</h2>
+                <p>No school context. Reload the page.</p>
+            </div>
+        )
     }
 
-    // ── B27.2 write-path consolidation (2026-05-08) ────────────────────
-    // Every write below routes through a SECURITY DEFINER bridge_* RPC
-    // via the service helpers. Each helper:
-    //   * permission-gates server-side (is_staff_of_school OR
-    //     assignments.write); refuses during impersonation
-    //   * sets app.audit_context so the AFTER trigger emits enriched
-    //     metadata (surface='helm.assignments', operation=...)
-    //   * emits a higher-level semantic audit row from the RPC body
-    //     (assignment.distributed / submission.received / submission.graded
-    //     / submission.ai_graded) IN ADDITION to the trigger's per-row
-    //     student_assignment.* event.
-    // Helm post-B27.2 has zero direct supabase.from(...) writes.
-
-    async function createAssignment() {
-        if (!newTitle.trim() || !selectedClass) {
-            alert('Enter a title and select a class')
-            return
-        }
-        try {
-            await createAssignmentRpc({
-                classId: selectedClass,
-                title:   newTitle.trim(),
-            })
-            setNewTitle('')
-            loadAssignments()
-        } catch (err) {
-            alert(err.message || 'Failed to create assignment')
-        }
-    }
-
-    async function assignToAllStudents() {
-        if (!selectedAssignment) {
-            alert('Select an assignment first')
-            return
-        }
-        if (students.length === 0) {
-            alert('No students found for this class')
-            return
-        }
-
-        setAssigning(true)
-        try {
-            const inserted = await distributeAssignment({
-                assignmentId: selectedAssignment,
-                studentIds:   students.map(s => s.id),
-            })
-            console.log(
-                `[assignToAllStudents] distributed to ${students.length} students; ${inserted} new rows`,
-            )
-            loadStudentAssignments()
-        } catch (err) {
-            alert(err.message || 'Failed to distribute assignment')
-        } finally {
-            setAssigning(false)
-        }
-    }
-
-    async function markSubmitted(studentId) {
-        const row = studentAssignments[studentId]
-        if (!row) return
-        try {
-            await markSubmissionReceived(row.id)
-            loadStudentAssignments()
-        } catch (err) {
-            alert(err.message || 'Failed to mark submitted')
-        }
-    }
-
-    async function saveGrade(studentId) {
-        const row = studentAssignments[studentId]
-        if (!row) return
-        const grade = gradeInputs[studentId] ?? ''
-        try {
-            await gradeSubmission({
-                studentAssignmentId: row.id,
-                grade,
-                // saveGrade today doesn't pass feedback — the rubric/AI
-                // feedback is set on the SAME column by gradeStudent
-                // below. Leaving it null preserves current behavior.
-                feedback: null,
-            })
-            loadStudentAssignments()
-        } catch (err) {
-            alert(err.message || 'Failed to save grade')
-        }
-    }
-
-    // ─── Core grading logic (single student) ────────────────────────────────
-
-    /**
-     * Grade a single student.
-     * Returns 'graded' | 'already_graded' | 'no_row' | 'cached'.
-     * @param {string}  studentId
-     * @param {boolean} forceRegrade  - ignore existing grades and cache
-     */
-    async function gradeStudent(studentId, forceRegrade = false) {
-        const row = studentAssignments[studentId]
-        if (!row) {
-            console.log(`[gradeStudent] ${studentId}: no row found`)
-            return 'no_row'
-        }
-
-        console.log(`[gradeStudent] ${studentId}:`, {
-            ai_grade: row.ai_grade,
-            grade: row.grade,
-            submission: row.submission ? `"${row.submission.slice(0, 40)}…"` : row.submission,
-            status: row.status,
-            forceRegrade,
-        })
-
-        // Requirement 1: skip already graded unless force
-        // Treat null, undefined, and empty string as "not graded"
-        const hasAiGrade = row.ai_grade != null && row.ai_grade !== ''
-        const hasTeacherGrade = row.grade != null && row.grade !== ''
-        if (!forceRegrade && (hasAiGrade || hasTeacherGrade)) {
-            console.log(`[gradeStudent] ${studentId}: skipping — already graded (ai_grade=${row.ai_grade}, grade=${row.grade})`)
-            return 'already_graded'
-        }
-
-        const assignmentTitle = assignments.find(a => a.id === selectedAssignment)?.title ?? 'Untitled'
-        // Use submission text if available; fall back to a placeholder so grading can proceed
-        const submission = (row.submission && row.submission.trim())
-            ? row.submission
-            : `[No submission yet from student ${studentId}]`
-
-        // Requirement 2: cache — compare submission hash
-        const currentHash = simpleHash(submission)
-        if (!forceRegrade && row.submission_hash === currentHash && row.ai_grade) {
-            return 'cached'
-        }
-
-        // Call AI via backend proxy — tag the error if it fails so callers can see it came from the proxy
-        let result
-        try {
-            result = await gradeWithAI(assignmentTitle, submission, {
-                userId: user?.id ?? null,
-                role,
-                schoolId,
-                deploymentMode,
-            })
-        } catch (aiErr) {
-            throw new Error(`AI call failed: ${aiErr.message}`)
-        }
-
-        // B27.2 — AI-grade write goes through bridge_record_ai_grade
-        // RPC. Server stamps ai_graded_at = now() and emits a
-        // submission.ai_graded audit row. Status deliberately stays
-        // unchanged (teacher's saveGrade handles the 'graded' transition).
-        try {
-            await recordAiGrade({
-                studentAssignmentId: row.id,
-                aiGrade:             result.suggested_grade,
-                feedback:            JSON.stringify({
-                    overall: result.overall,
-                    rubric:  result.rubric,
-                }),
-                submissionHash:      currentHash,
-            })
-        } catch (err) {
-            throw new Error(`AI grade save failed: ${err.message}`)
-        }
-
-        return 'graded'
-    }
-
-    // ─── Single student feedback (existing button) ──────────────────────────
-
-    const generateFeedback = useCallback(async (studentId, forceRegrade = false) => {
-        if (aiLoading[studentId]) return               // prevent double-click
-
-        setAiLoading(prev => ({ ...prev, [studentId]: true }))
-        setRowErrors(prev => {
-            if (!(studentId in prev)) return prev
-            const next = { ...prev }; delete next[studentId]; return next
-        })
-
-        try {
-            const outcome = await gradeStudent(studentId, forceRegrade)
-            if (outcome === 'already_graded') {
-                alert('This student already has a grade. Use "Force Regrade" to overwrite.')
-            } else if (outcome === 'cached') {
-                // No API call needed — submission unchanged
-            }
-            loadStudentAssignments()
-        } catch (err) {
-            console.error(`[generateFeedback] ${studentId} failed:`, err)
-            setRowErrors(prev => ({ ...prev, [studentId]: err.message }))
-            alert(`AI error: ${err.message}`)
-        } finally {
-            setAiLoading(prev => ({ ...prev, [studentId]: false }))
-        }
-    }, [aiLoading, studentAssignments, assignments, selectedAssignment, user, role, schoolId])
-
-    // ─── Batch: Grade Entire Class ──────────────────────────────────────────
-
-    const gradeEntireClass = useCallback(async () => {
-        if (batchGrading) return                        // prevent double-click
-
-        // Include all student_assignments without an existing grade.
-        // Treat null, undefined, and '' as "not graded".
-        console.log('[gradeEntireClass] students:', students.length, 'studentAssignments keys:', Object.keys(studentAssignments))
-        const eligibleIds = students
-            .filter(s => {
-                const sa = studentAssignments[s.id]
-                if (!sa) {
-                    console.log(`[gradeEntireClass] ${s.id} (${s.name}): no student_assignment row`)
-                    return false
-                }
-                const hasAiGrade = sa.ai_grade != null && sa.ai_grade !== ''
-                const hasTeacherGrade = sa.grade != null && sa.grade !== ''
-                const dominated = hasAiGrade || hasTeacherGrade
-                console.log(`[gradeEntireClass] ${s.id} (${s.name}): ai_grade=${JSON.stringify(sa.ai_grade)} grade=${JSON.stringify(sa.grade)} → ${dominated ? 'SKIP' : 'ELIGIBLE'}`)
-                return !dominated
-            })
-            .map(s => s.id)
-
-        if (eligibleIds.length === 0) {
-            // Build an accurate explanation from the breakdown rather than guessing.
-            const lines = [
-                `Nothing to grade for assignment ${selectedAssignment}.`,
-                '',
-                `Students in school: ${gradingStats.students}`,
-                `student_assignments rows for this assignment: ${gradingStats.rows}`,
-                `  • ${gradingStats.noRow} student(s) with NO row (need "Assign to all students" first)`,
-                `  • ${gradingStats.withAiGrade} already have an AI grade`,
-                `  • ${gradingStats.withTeacherGrade} already have a teacher grade`,
-                `  • ${gradingStats.eligible} eligible for grading`,
-            ]
-            if (gradingStats.students === 0) {
-                lines.push('', 'Cause: 0 students returned by school_members query — check console for query errors (RLS / school_id).')
-            } else if (gradingStats.rows === 0) {
-                lines.push('', 'Cause: 0 student_assignments rows for this assignment_id — click "Assign to all students" first, or check console for query errors.')
-            } else if (gradingStats.eligible === 0) {
-                lines.push('', 'Cause: every assigned student already has a grade. Use "Force Regrade" on a row to override.')
-            }
-            alert(lines.join('\n'))
-            return
-        }
-
-        console.log(`[gradeEntireClass] ${eligibleIds.length} eligible for grading`)
-
-        setBatchGrading(true)
-        setBatchProgress({ done: 0, total: eligibleIds.length, skipped: 0, failed: 0 })
-        setRowErrors({})                                // clear stale errors before a new run
-
-        let done = 0, skipped = 0, failed = 0
-        const failureMessages = []                      // [{ name, message }]
-
-        // Process in batches
-        for (let i = 0; i < eligibleIds.length; i += BATCH_SIZE) {
-            const batch = eligibleIds.slice(i, i + BATCH_SIZE)
-
-            const results = await Promise.allSettled(
-                batch.map(async (sid) => {
-                    setAiLoading(prev => ({ ...prev, [sid]: true }))
-                    try {
-                        return await gradeStudent(sid, false)
-                    } finally {
-                        setAiLoading(prev => ({ ...prev, [sid]: false }))
-                    }
-                })
-            )
-
-            results.forEach((r, idx) => {
-                const sid = batch[idx]
-                if (r.status === 'fulfilled') {
-                    if (r.value === 'graded') done++
-                    else skipped++ // already_graded, no_submission, no_row, cached
-                } else {
-                    failed++
-                    const msg = r.reason?.message || String(r.reason) || 'unknown error'
-                    const studentName = students.find(s => s.id === sid)?.name || sid
-                    console.error(`[gradeEntireClass] ${studentName} (${sid}) failed:`, r.reason)
-                    failureMessages.push({ name: studentName, message: msg })
-                    setRowErrors(prev => ({ ...prev, [sid]: msg }))
-                }
-            })
-
-            setBatchProgress({ done, total: eligibleIds.length, skipped, failed })
-
-            // Refresh data after each batch so the UI updates progressively
-            await loadStudentAssignments()
-        }
-
-        setBatchGrading(false)
-
-        // Surface real failure causes — first few, plus a hint to check the console for the rest
-        let summary = `Batch grading complete — ${done} graded, ${skipped} skipped, ${failed} failed.`
-        if (failureMessages.length > 0) {
-            const preview = failureMessages.slice(0, 3)
-                .map(f => `• ${f.name}: ${f.message}`)
-                .join('\n')
-            const more = failureMessages.length > 3
-                ? `\n…and ${failureMessages.length - 3} more (see console).`
-                : ''
-            summary += `\n\nFailures:\n${preview}${more}`
-        }
-        alert(summary)
-    }, [batchGrading, students, studentAssignments, assignments, selectedAssignment, user, role, schoolId, gradingStats])
-
-    // ─── Render ─────────────────────────────────────────────────────────────
+    const canManage = CAN.manageAssignment(role)
 
     return (
         <div>
             <h2>Assignments</h2>
 
-            <label>Class: </label>
-            <select value={selectedClass} onChange={(e) => setSelectedClass(e.target.value)}>
-                <option value="">Select Class</option>
-                {classes.map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-            </select>
-
-            {selectedClass && (
-                <>
-                    <br /><br />
-
-                    <div>
-                        <input
-                            placeholder="New assignment title"
-                            value={newTitle}
-                            onChange={(e) => setNewTitle(e.target.value)}
-                        />
-                        {' '}
-                        <button onClick={createAssignment}>Add Assignment</button>
-                    </div>
-
-                    <br />
-
-                    <label>Assignment: </label>
-                    <select value={selectedAssignment} onChange={(e) => setSelectedAssignment(e.target.value)}>
-                        <option value="">Select Assignment</option>
-                        {assignments.map(a => (
-                            <option key={a.id} value={a.id}>{a.title}</option>
+            {/* Class selector */}
+            {classesStatus === 'loading' && <p>Loading classes…</p>}
+            {classesStatus === 'error' && (
+                <p style={ERROR_STYLE}>
+                    Could not load classes: <code>{classesError}</code>
+                </p>
+            )}
+            {classesStatus === 'ready' && classes.length === 0 && (
+                <p>No classes available.</p>
+            )}
+            {classesStatus === 'ready' && classes.length > 0 && (
+                <div style={ROW_STYLE}>
+                    <label htmlFor="class-select" style={LABEL_STYLE}>Class:</label>
+                    <select
+                        id="class-select"
+                        value={selectedClassId}
+                        onChange={(e) => { setSelectedClassId(e.target.value); setExpandedId(null) }}
+                        style={INPUT_STYLE}
+                    >
+                        {classes.map((c) => (
+                            <option key={c.class_id} value={c.class_id}>
+                                {c.name}{c.subject ? ` — ${c.subject}` : ''}
+                            </option>
                         ))}
                     </select>
+                </div>
+            )}
 
-                    {selectedAssignment && (
-                        <>
-                            {' '}
-                            <button onClick={assignToAllStudents} disabled={assigning}>
-                                {assigning ? 'Assigning…' : `Assign to all students (${students.length})`}
-                            </button>
-                            {' '}
-                            <button
-                                onClick={gradeEntireClass}
-                                disabled={batchGrading}
-                                style={{
-                                    backgroundColor: '#2563eb',
-                                    color: '#fff',
-                                    border: 'none',
-                                    padding: '6px 14px',
-                                    borderRadius: 4,
-                                    cursor: batchGrading ? 'not-allowed' : 'pointer',
-                                    opacity: batchGrading ? 0.6 : 1,
-                                }}
-                            >
-                                {batchGrading
-                                    ? `Grading… ${batchProgress.done}/${batchProgress.total}`
-                                    : 'Grade Entire Class'}
-                            </button>
-                        </>
+            {/* Assignments for selected class */}
+            {selectedClassId && aStatus === 'loading' && <p>Loading assignments…</p>}
+            {aStatus === 'error' && (
+                <p style={ERROR_STYLE}>
+                    Could not load assignments: <code>{aError}</code>
+                </p>
+            )}
+
+            {aStatus === 'ready' && (
+                <>
+                    {assignments.length === 0 && (
+                        <p>
+                            No assignments yet
+                            {canManage && '. Use the form below to create one.'}
+                            {!canManage && '.'}
+                        </p>
                     )}
 
-                    {batchGrading && (
-                        <div style={{ margin: '8px 0', fontSize: '0.9em', color: '#555' }}>
-                            Progress: {batchProgress.done} graded, {batchProgress.skipped} skipped, {batchProgress.failed} failed
-                            {' / '}{batchProgress.total} total
-                        </div>
-                    )}
-
-                    {selectedAssignment && (
-                        <div style={{
-                            margin: '12px 0',
-                            padding: '8px 12px',
-                            background: '#f8fafc',
-                            border: '1px solid #e2e8f0',
-                            borderRadius: 4,
-                            fontSize: '0.85em',
-                            color: '#334155',
-                            fontFamily: 'monospace',
-                        }}>
-                            <div><strong>Diagnostics</strong></div>
-                            <div>assignment_id: {selectedAssignment}</div>
-                            <div>students in school: {gradingStats.students}</div>
-                            <div>student_assignments rows for this assignment: {gradingStats.rows}</div>
-                            <div>
-                                breakdown — eligible: {gradingStats.eligible}
-                                {' · '}has AI grade: {gradingStats.withAiGrade}
-                                {' · '}has teacher grade: {gradingStats.withTeacherGrade}
-                                {' · '}no row (not yet assigned): {gradingStats.noRow}
-                            </div>
-                        </div>
-                    )}
-
-                    <br />
-
-                    <h3>Students ({students.length})</h3>
-
-                    {students.length === 0 && <p>No students found for this class</p>}
-
-                    {students.map((s) => {
-                        const sa = studentAssignments[s.id]
-                        const loading = aiLoading[s.id]
-                        const hasExistingGrade = sa?.ai_grade || sa?.grade
-                        const rowError = rowErrors[s.id]
-                        return (
-                            <div key={s.id} style={{ border: '1px solid #ccc', margin: '6px 0', padding: '10px 14px' }}>
-                                <div>
-                                    <strong>{s.name}</strong>
-                                    {' — '}
-                                    {sa ? (
+                    {assignments.length > 0 && (
+                        <table style={TABLE_STYLE}>
+                            <thead>
+                                <tr>
+                                    <th style={TH_STYLE}>Title</th>
+                                    <th style={TH_STYLE}>Due</th>
+                                    {canManage ? (
                                         <>
-                                            <span>Status: <em>{sa.status}</em></span>
-                                            {'  '}
-                                            {sa.status === 'assigned' && (
-                                                <button onClick={() => markSubmitted(s.id)}>
-                                                    Mark Submitted
-                                                </button>
-                                            )}
-                                            {'  '}
-                                            <input
-                                                placeholder="Grade"
-                                                value={gradeInputs[s.id] ?? ''}
-                                                onChange={(e) =>
-                                                    setGradeInputs(prev => ({ ...prev, [s.id]: e.target.value }))
-                                                }
-                                                style={{ width: 80 }}
-                                            />
-                                            {' '}
-                                            <button onClick={() => saveGrade(s.id)}>Save Grade</button>
-                                            {'  '}
-                                            <button
-                                                onClick={() => generateFeedback(s.id, false)}
-                                                disabled={loading || batchGrading}
-                                            >
-                                                {loading ? 'Generating…' : 'Generate Feedback'}
-                                            </button>
-                                            {hasExistingGrade && (
-                                                <>
-                                                    {' '}
-                                                    <button
-                                                        onClick={() => generateFeedback(s.id, true)}
-                                                        disabled={loading || batchGrading}
-                                                        style={{
-                                                            backgroundColor: '#dc2626',
-                                                            color: '#fff',
-                                                            border: 'none',
-                                                            padding: '4px 10px',
-                                                            borderRadius: 4,
-                                                            cursor: (loading || batchGrading) ? 'not-allowed' : 'pointer',
-                                                            opacity: (loading || batchGrading) ? 0.6 : 1,
-                                                            fontSize: '0.85em',
-                                                        }}
-                                                    >
-                                                        Force Regrade
-                                                    </button>
-                                                </>
-                                            )}
+                                            <th style={TH_STYLE}>Distributed</th>
+                                            <th style={TH_STYLE}>Submitted</th>
                                         </>
                                     ) : (
-                                        <span style={{ color: '#999' }}>Not assigned</span>
+                                        <th style={TH_STYLE}>My status</th>
                                     )}
-                                </div>
+                                    <th style={TH_STYLE}></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {assignments.map((a) => (
+                                    <Fragment key={a.assignment_id}>
+                                        <tr>
+                                            <td style={TD_STYLE}>{a.title}</td>
+                                            <td style={TD_STYLE}>{formatDate(a.due_date)}</td>
+                                            {canManage ? (
+                                                <>
+                                                    <td style={TD_STYLE}>{a.distributed_count ?? '—'}</td>
+                                                    <td style={TD_STYLE}>{a.submitted_count ?? '—'}</td>
+                                                </>
+                                            ) : (
+                                                <td style={TD_STYLE}>{a.my_status || 'not yet distributed'}</td>
+                                            )}
+                                            <td style={TD_STYLE}>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setExpandedId(
+                                                        expandedId === a.assignment_id ? null : a.assignment_id,
+                                                    )}
+                                                    style={LINK_BUTTON_STYLE}
+                                                >
+                                                    {expandedId === a.assignment_id ? 'Close' : 'Details'}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                        {expandedId === a.assignment_id && (
+                                            <tr>
+                                                <td colSpan={5} style={EXPANDED_TD_STYLE}>
+                                                    <ExpandedAssignment
+                                                        assignment={a}
+                                                        canManage={canManage}
+                                                        role={role}
+                                                        onChanged={loadAssignments}
+                                                    />
+                                                </td>
+                                            </tr>
+                                        )}
+                                    </Fragment>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
 
-                                {rowError && (
-                                    <div style={{
-                                        marginTop: 8,
-                                        padding: '6px 10px',
-                                        background: '#fef2f2',
-                                        border: '1px solid #fecaca',
-                                        borderRadius: 4,
-                                        color: '#991b1b',
-                                        fontSize: '0.85em',
-                                    }}>
-                                        <strong>Grading error:</strong> {rowError}
-                                    </div>
-                                )}
-
-                                {(sa?.ai_grade || sa?.feedback) && (() => {
-                                    const parsed = parseFeedback(sa.feedback)
-                                    return (
-                                        <div style={{
-                                            marginTop: 10,
-                                            paddingTop: 10,
-                                            borderTop: '1px dashed #ddd',
-                                        }}>
-                                            {sa.ai_grade && (
-                                                <div style={{ marginBottom: 8 }}>
-                                                    <strong>AI Grade: </strong>
-                                                    <span style={{ fontSize: '1.15em', fontWeight: 700 }}>
-                                                        {sa.ai_grade}
-                                                    </span>
-                                                </div>
-                                            )}
-                                            {parsed?.rubric && (
-                                                <div style={{ marginBottom: 8 }}>
-                                                    {RUBRIC_CRITERIA.map(criterion => {
-                                                        const item = parsed.rubric[criterion]
-                                                        if (!item) return null
-                                                        return (
-                                                            <div key={criterion} style={{ marginBottom: 4 }}>
-                                                                <span style={{
-                                                                    display: 'inline-block',
-                                                                    width: 90,
-                                                                    fontWeight: 600,
-                                                                    textTransform: 'capitalize',
-                                                                }}>
-                                                                    {criterion}
-                                                                </span>
-                                                                <span style={{ color: '#777', marginRight: 6 }}>
-                                                                    {item.score}
-                                                                </span>
-                                                                <span style={{ color: '#444' }}>
-                                                                    {item.comment}
-                                                                </span>
-                                                            </div>
-                                                        )
-                                                    })}
-                                                </div>
-                                            )}
-                                            {parsed?.overall && (
-                                                <div style={{ color: '#444', fontStyle: 'italic' }}>
-                                                    {parsed.overall}
-                                                </div>
-                                            )}
-                                        </div>
-                                    )
-                                })()}
-                            </div>
-                        )
-                    })}
+                    {canManage && (
+                        <CreateAssignmentForm
+                            classId={selectedClassId}
+                            onCreated={loadAssignments}
+                        />
+                    )}
                 </>
             )}
         </div>
     )
+}
+
+// ─── Expanded assignment (staff edit/distribute/delete; student submit) ────
+
+function ExpandedAssignment({ assignment, canManage, role, onChanged }) {
+    if (canManage) {
+        return <StaffPanel assignment={assignment} onChanged={onChanged} />
+    }
+    if (CAN.submitAssignment(role)) {
+        return <StudentPanel assignment={assignment} onChanged={onChanged} />
+    }
+    // Read-only (e.g. parent — Phase 3).
+    return (
+        <div style={DETAIL_STYLE}>
+            <p style={DESCRIPTION_STYLE}>{assignment.description || <em>(no description)</em>}</p>
+        </div>
+    )
+}
+
+// ─── Staff panel: edit + distribute + delete ───────────────────────────────
+
+function StaffPanel({ assignment, onChanged }) {
+    const [draftTitle, setDraftTitle] = useState(assignment.title)
+    const [draftDescription, setDraftDescription] = useState(assignment.description || '')
+    const [draftDueDate, setDraftDueDate] = useState(toDatetimeLocal(assignment.due_date))
+
+    const [saveStatus, setSaveStatus] = useState('idle')
+    const [saveError, setSaveError]   = useState(null)
+    const [distStatus, setDistStatus] = useState('idle')
+    const [distError, setDistError]   = useState(null)
+    const [distResult, setDistResult] = useState(null)
+    const [delStatus, setDelStatus]   = useState('idle')
+    const [delError, setDelError]     = useState(null)
+    const [confirmDelete, setConfirmDelete] = useState(false)
+
+    async function handleSave(event) {
+        event.preventDefault()
+        setSaveStatus('saving')
+        setSaveError(null)
+        const { error } = await api.assignments.update(
+            assignment.assignment_id,
+            draftTitle.trim(),
+            draftDescription.trim(),
+            fromDatetimeLocal(draftDueDate),
+            null,
+        )
+        if (error) {
+            setSaveError(error.message || 'Could not save assignment.')
+            setSaveStatus('error')
+            return
+        }
+        setSaveStatus('idle')
+        await onChanged()
+    }
+
+    async function handleDistribute() {
+        setDistStatus('working')
+        setDistError(null)
+        setDistResult(null)
+        const { data, error } = await api.assignments.distribute(assignment.assignment_id)
+        if (error) {
+            setDistError(error.message || 'Could not distribute.')
+            setDistStatus('error')
+            return
+        }
+        setDistResult(typeof data === 'number' ? data : null)
+        setDistStatus('done')
+        await onChanged()
+    }
+
+    async function handleDelete() {
+        setDelStatus('working')
+        setDelError(null)
+        const { error } = await api.assignments.delete(assignment.assignment_id)
+        if (error) {
+            setDelError(error.message || 'Could not delete.')
+            setDelStatus('error')
+            return
+        }
+        setDelStatus('done')
+        setConfirmDelete(false)
+        await onChanged()
+    }
+
+    return (
+        <div style={DETAIL_STYLE}>
+            <form onSubmit={handleSave} style={EDIT_FORM_STYLE}>
+                <div style={ROW_STYLE}>
+                    <label style={LABEL_STYLE}>Title</label>
+                    <input
+                        type="text"
+                        value={draftTitle}
+                        onChange={(e) => setDraftTitle(e.target.value)}
+                        disabled={saveStatus === 'saving'}
+                        maxLength={200}
+                        style={INPUT_STYLE}
+                    />
+                </div>
+                <div style={ROW_STYLE}>
+                    <label style={LABEL_STYLE}>Description</label>
+                    <textarea
+                        value={draftDescription}
+                        onChange={(e) => setDraftDescription(e.target.value)}
+                        disabled={saveStatus === 'saving'}
+                        rows={3}
+                        style={{ ...INPUT_STYLE, fontFamily: 'inherit' }}
+                    />
+                </div>
+                <div style={ROW_STYLE}>
+                    <label style={LABEL_STYLE}>Due</label>
+                    <input
+                        type="datetime-local"
+                        value={draftDueDate}
+                        onChange={(e) => setDraftDueDate(e.target.value)}
+                        disabled={saveStatus === 'saving'}
+                        style={INPUT_STYLE}
+                    />
+                </div>
+                <div style={ROW_STYLE}>
+                    <button
+                        type="submit"
+                        disabled={saveStatus === 'saving' || !draftTitle.trim()}
+                        style={BUTTON_STYLE}
+                    >
+                        {saveStatus === 'saving' ? 'Saving…' : 'Save assignment'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={handleDistribute}
+                        disabled={distStatus === 'working'}
+                        style={BUTTON_STYLE}
+                    >
+                        {distStatus === 'working' ? 'Distributing…' : 'Distribute to enrolled students'}
+                    </button>
+                    {!confirmDelete && (
+                        <button
+                            type="button"
+                            onClick={() => setConfirmDelete(true)}
+                            style={DANGER_BUTTON_STYLE}
+                        >
+                            Delete assignment
+                        </button>
+                    )}
+                    {confirmDelete && (
+                        <>
+                            <span style={CONFIRM_STYLE}>Delete and cascade submissions?</span>
+                            <button
+                                type="button"
+                                onClick={handleDelete}
+                                disabled={delStatus === 'working'}
+                                style={DANGER_BUTTON_STYLE}
+                            >
+                                {delStatus === 'working' ? 'Deleting…' : 'Confirm delete'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setConfirmDelete(false)}
+                                style={LINK_BUTTON_STYLE}
+                            >
+                                Cancel
+                            </button>
+                        </>
+                    )}
+                </div>
+                {saveStatus === 'error' && saveError && (
+                    <p style={ERROR_STYLE}><code>{saveError}</code></p>
+                )}
+                {distStatus === 'error' && distError && (
+                    <p style={ERROR_STYLE}><code>{distError}</code></p>
+                )}
+                {distStatus === 'done' && distResult !== null && (
+                    <p style={SUCCESS_STYLE}>
+                        Distributed to {distResult} new student{distResult === 1 ? '' : 's'}.
+                    </p>
+                )}
+                {delStatus === 'error' && delError && (
+                    <p style={ERROR_STYLE}><code>{delError}</code></p>
+                )}
+            </form>
+        </div>
+    )
+}
+
+// ─── Student panel: submit / resubmit ──────────────────────────────────────
+
+function StudentPanel({ assignment, onChanged }) {
+    const [draftText, setDraftText] = useState(assignment.my_submission_text || '')
+    const [status, setStatus]       = useState('idle')
+    const [error, setError]         = useState(null)
+
+    async function handleSubmit(event) {
+        event.preventDefault()
+        const text = draftText.trim()
+        if (!text) return
+        setStatus('submitting')
+        setError(null)
+        const { error: rpcError } = await api.assignments.submit(assignment.assignment_id, text)
+        if (rpcError) {
+            setError(rpcError.message || 'Could not submit.')
+            setStatus('error')
+            return
+        }
+        setStatus('done')
+        await onChanged()
+    }
+
+    const hasPriorSubmission = Boolean(assignment.my_submission_text)
+    const isResubmit = hasPriorSubmission
+
+    return (
+        <div style={DETAIL_STYLE}>
+            <p style={DESCRIPTION_STYLE}>{assignment.description || <em>(no description)</em>}</p>
+            {assignment.due_date && (
+                <p style={META_STYLE}>Due: {formatDate(assignment.due_date)}</p>
+            )}
+
+            <form onSubmit={handleSubmit} style={SUBMIT_FORM_STYLE}>
+                <label style={LABEL_STYLE}>
+                    {isResubmit ? 'Update your submission' : 'Your submission'}
+                </label>
+                <textarea
+                    value={draftText}
+                    onChange={(e) => setDraftText(e.target.value)}
+                    rows={6}
+                    disabled={status === 'submitting'}
+                    style={{ ...INPUT_STYLE, fontFamily: 'inherit' }}
+                />
+                <div style={ROW_STYLE}>
+                    <button
+                        type="submit"
+                        disabled={status === 'submitting' || !draftText.trim()}
+                        style={BUTTON_STYLE}
+                    >
+                        {status === 'submitting'
+                            ? 'Submitting…'
+                            : (isResubmit ? 'Resubmit' : 'Submit')}
+                    </button>
+                    {assignment.my_submitted_at && (
+                        <span style={META_STYLE}>
+                            Last submitted: {formatDate(assignment.my_submitted_at)}
+                        </span>
+                    )}
+                </div>
+                {status === 'error' && error && (
+                    <p style={ERROR_STYLE}><code>{error}</code></p>
+                )}
+            </form>
+        </div>
+    )
+}
+
+// ─── Create-assignment form (staff only, below the table) ──────────────────
+
+function CreateAssignmentForm({ classId, onCreated }) {
+    const [title, setTitle]             = useState('')
+    const [description, setDescription] = useState('')
+    const [dueDate, setDueDate]         = useState('')
+    const [status, setStatus]           = useState('idle')
+    const [error, setError]             = useState(null)
+
+    async function handleSubmit(event) {
+        event.preventDefault()
+        if (!title.trim()) return
+        setStatus('submitting')
+        setError(null)
+        const { error: rpcError } = await api.assignments.create(
+            classId,
+            title.trim(),
+            description.trim(),
+            fromDatetimeLocal(dueDate),
+            null,
+        )
+        if (rpcError) {
+            setError(rpcError.message || 'Could not create assignment.')
+            setStatus('error')
+            return
+        }
+        setTitle('')
+        setDescription('')
+        setDueDate('')
+        setStatus('idle')
+        await onCreated()
+    }
+
+    return (
+        <form onSubmit={handleSubmit} style={CREATE_FORM_STYLE}>
+            <h3 style={H3_STYLE}>Create an assignment</h3>
+            <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Title"
+                maxLength={200}
+                disabled={status === 'submitting'}
+                required
+                style={INPUT_STYLE}
+            />
+            <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Description (optional)"
+                rows={3}
+                disabled={status === 'submitting'}
+                style={{ ...INPUT_STYLE, fontFamily: 'inherit' }}
+            />
+            <div style={ROW_STYLE}>
+                <label style={LABEL_STYLE}>Due</label>
+                <input
+                    type="datetime-local"
+                    value={dueDate}
+                    onChange={(e) => setDueDate(e.target.value)}
+                    disabled={status === 'submitting'}
+                    style={INPUT_STYLE}
+                />
+            </div>
+            <button
+                type="submit"
+                disabled={status === 'submitting' || !title.trim()}
+                style={BUTTON_STYLE}
+            >
+                {status === 'submitting' ? 'Creating…' : 'Create assignment'}
+            </button>
+            {status === 'error' && error && (
+                <p style={ERROR_STYLE}><code>{error}</code></p>
+            )}
+        </form>
+    )
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+function formatDate(value) {
+    if (!value) return '—'
+    try {
+        const d = new Date(value)
+        if (Number.isNaN(d.getTime())) return '—'
+        return d.toLocaleString()
+    } catch {
+        return '—'
+    }
+}
+
+// HTML5 datetime-local input wants "YYYY-MM-DDTHH:MM" with no Z. Convert a
+// timestamp string in either direction.
+function toDatetimeLocal(value) {
+    if (!value) return ''
+    try {
+        const d = new Date(value)
+        if (Number.isNaN(d.getTime())) return ''
+        const pad = (n) => String(n).padStart(2, '0')
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    } catch {
+        return ''
+    }
+}
+
+function fromDatetimeLocal(value) {
+    if (!value) return null
+    // Browser provides local-zone string. Treat as local; supabase-js will
+    // serialise to ISO. Postgres timestamp (without tz) absorbs that.
+    return value
+}
+
+// ─── Styles — minimal, consistent with the rest of the v6-lite shell. ──────
+
+const TABLE_STYLE = {
+    borderCollapse: 'collapse',
+    marginTop:      8,
+    minWidth:       560,
+}
+const TH_STYLE = {
+    textAlign:    'left',
+    padding:      '4px 12px 4px 0',
+    borderBottom: '1px solid #ccc',
+    fontSize:     13,
+}
+const TD_STYLE = {
+    padding:      '6px 12px 6px 0',
+    borderBottom: '1px solid #eee',
+    fontSize:     14,
+    verticalAlign: 'top',
+}
+const EXPANDED_TD_STYLE = {
+    padding:    '12px 12px 16px 12px',
+    background: '#fafafa',
+    borderBottom: '1px solid #eee',
+}
+const DETAIL_STYLE = {
+    display:       'flex',
+    flexDirection: 'column',
+    gap:           10,
+    maxWidth:      640,
+}
+const DESCRIPTION_STYLE = {
+    fontSize:    14,
+    whiteSpace:  'pre-wrap',
+    margin:      0,
+}
+const META_STYLE = {
+    fontSize: 13,
+    color:    '#666',
+    margin:   0,
+}
+const EDIT_FORM_STYLE = {
+    display:       'flex',
+    flexDirection: 'column',
+    gap:           6,
+    maxWidth:      560,
+}
+const SUBMIT_FORM_STYLE = {
+    display:       'flex',
+    flexDirection: 'column',
+    gap:           6,
+    maxWidth:      560,
+}
+const CREATE_FORM_STYLE = {
+    display:       'flex',
+    flexDirection: 'column',
+    gap:           8,
+    maxWidth:      400,
+    marginTop:     24,
+}
+const ROW_STYLE = {
+    display:       'flex',
+    alignItems:    'center',
+    gap:           8,
+    flexWrap:      'wrap',
+}
+const LABEL_STYLE = {
+    fontSize:   13,
+    fontWeight: 600,
+    minWidth:   88,
+}
+const INPUT_STYLE = {
+    padding:      '6px 8px',
+    border:       '1px solid #ccc',
+    borderRadius: 4,
+    fontSize:     14,
+    flex:         1,
+    minWidth:     0,
+}
+const H3_STYLE = {
+    fontSize:   15,
+    fontWeight: 600,
+    margin:     '0 0 4px 0',
+}
+const BUTTON_STYLE = {
+    padding:      '6px 12px',
+    border:       '1px solid #888',
+    borderRadius: 4,
+    background:   '#f6f6f6',
+    cursor:       'pointer',
+    fontSize:     14,
+}
+const DANGER_BUTTON_STYLE = {
+    padding:      '6px 12px',
+    border:       '1px solid #b00',
+    borderRadius: 4,
+    background:   '#fdf3f3',
+    color:        '#b00',
+    cursor:       'pointer',
+    fontSize:     14,
+}
+const LINK_BUTTON_STYLE = {
+    background: 'transparent',
+    border:     'none',
+    color:      '#06c',
+    cursor:     'pointer',
+    fontSize:   13,
+    padding:    0,
+    textDecoration: 'underline',
+}
+const CONFIRM_STYLE = {
+    fontSize: 13,
+    color:    '#a00',
+}
+const SUCCESS_STYLE = {
+    color:    '#0a0',
+    fontSize: 13,
+}
+const ERROR_STYLE = {
+    color:     '#a00',
+    fontSize:  14,
+    marginTop: 6,
 }
