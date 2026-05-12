@@ -198,6 +198,26 @@ export const assignments = {
         supabase.rpc('list_class_assignments', { p_class_id: classId }),
 
     /**
+     * Student-facing cross-class listing. Returns one row per
+     * assignment distributed to the calling student, joined with
+     * class name and the student's own submission state.
+     *
+     * Wraps `helm_list_assignments_for_student` (migration M10) which
+     * applies the SECDEF lift needed to do the assignments x classes
+     * x student_assignments join safely from an authenticated client.
+     * Row filter is `sa.student_id = auth.uid()` server-side — cross-
+     * student access is structurally impossible. Empty array is the
+     * "no assignments distributed yet" state and is a real state for
+     * a brand-new student.
+     *
+     * Row shape: { student_assignment_id, assignment_id, class_id,
+     * class_name, title, description, due_date, my_status,
+     * my_submission_text, my_submitted_at, created_at }.
+     */
+    listForStudent: () =>
+        supabase.rpc('helm_list_assignments_for_student'),
+
+    /**
      * Create assignment. Admin-of-school OR teacher-of-class.
      * @param {string} classId
      * @param {string} title

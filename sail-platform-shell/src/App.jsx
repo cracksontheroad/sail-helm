@@ -18,6 +18,7 @@ import Settings from './pages/Settings'
 import Courses from './pages/Courses'
 import Attendance from './pages/Attendance'
 import CopilotReviewStruggling from './pages/CopilotReviewStruggling'
+import MyAssignments from './pages/MyAssignments'
 
 /**
  * Banner shown across the top of Helm whenever the page was opened with
@@ -276,8 +277,8 @@ function App() {
                 {CAN.manageSchool(role) && (
                     <><Link to="/settings">Settings</Link></>
                 )}
-                {CAN.viewOwnGrades(role) && (
-                    <><Link to="/my-grades">My Grades</Link></>
+                {CAN.viewOwnAssignments(role) && (
+                    <><Link to="/my-assignments">My Assignments</Link></>
                 )}
             </nav>
 
@@ -310,14 +311,9 @@ function App() {
                     <Route path="/settings" element={<Settings />} />
                 )}
 
-                {/* Student routes (placeholder for now) */}
-                {CAN.viewOwnGrades(role) && (
-                    <Route path="/my-grades" element={
-                        <div>
-                            <h2>My Grades</h2>
-                            <p>Student grade view coming soon.</p>
-                        </div>
-                    } />
+                {/* Student routes */}
+                {CAN.viewOwnAssignments(role) && (
+                    <Route path="/my-assignments" element={<MyAssignments />} />
                 )}
 
                 {/* Provisioning — available to anyone CAN.provisionSchool admits.

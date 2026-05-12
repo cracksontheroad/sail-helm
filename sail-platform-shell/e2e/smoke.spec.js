@@ -26,7 +26,8 @@ test('alice (admin) can sign in and lands on Dashboard', async ({ page }) => {
 
 test('bob (student) can sign in', async ({ page }) => {
     await signIn(page, 'bob')
-    // Student gets routed to /my-grades stub by App.jsx's defaultRoute.
-    await expect(page).toHaveURL(/\/(my-grades|$)/)
+    // Student lands on /my-assignments via App.jsx's defaultRoute
+    // (formerly the /my-grades stub; replaced in PR B).
+    await expect(page).toHaveURL(/\/(my-assignments|$)/)
     await signOut(page)
 })

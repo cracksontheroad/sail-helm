@@ -58,8 +58,11 @@ test('full assignment lifecycle: create → distribute → submit → grade', as
     const bobPage = await bobCtx.newPage()
     await signIn(bobPage, 'bob')
 
-    // Bob navigates to Assignments and selects the same class.
-    await bobPage.getByRole('link', { name: /Assignments/i }).click()
+    // Bob navigates to Assignments (the staff/student class-listing
+    // surface) and selects the same class. Use `exact: true` so the
+    // regex doesn't also match the student-only "My Assignments" link
+    // PR B added to bob's nav.
+    await bobPage.getByRole('link', { name: 'Assignments', exact: true }).click()
     await bobPage.locator('select').first()
         .selectOption('eeeeeeee-0000-0000-0000-000000000002')
 
