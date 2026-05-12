@@ -19,6 +19,60 @@ if (!supabaseUrl || !supabaseKey) {
     )
 }
 
+// ─── Project-isolation guard ─────────────────────────────────────────────────
+//
+// Helm operates ONLY against the canonical SAIL-core Supabase project
+// (`gidyonbzxjorrgpicctt`). The legacy SAIL-Helm project
+// (`qilppvnwilcxworlrdjh`) is decommissioning but, at audit time
+// (2026-05-13), is still ACTIVE_HEALTHY on Supabase — a misconfigured
+// deploy could silently read/write against it. This guard prevents that.
+//
+// Mirrors the Bridge guard in `sail-bridge/src/services/supabase/client.js`
+// (Phase 5.2). Helm is intentionally STRICTER than Bridge: a URL that
+// can't be parsed into a project ref is also rejected. Bridge tolerates
+// null refs for dev environments without `.env.local`; Helm already
+// requires `.env` (the throw above), so a present-but-malformed URL is
+// always a configuration bug.
+//
+// Match is on the Supabase project ref (subdomain of `*.supabase.<tld>`).
+// Pattern lifted verbatim from Bridge so the two stay in lock-step.
+const SAIL_CORE_PROJECT_REF = 'gidyonbzxjorrgpicctt'
+const LEGACY_PROJECT_REF    = 'qilppvnwilcxworlrdjh'
+
+function extractProjectRef(input) {
+    if (!input) return null
+    const m = String(input).match(/^https?:\/\/([a-z0-9-]+)\.supabase\./i)
+    return m ? m[1].toLowerCase() : null
+}
+
+const projectRef = extractProjectRef(supabaseUrl)
+
+if (projectRef === LEGACY_PROJECT_REF) {
+    throw new Error(
+        `[supabaseClient guard] Legacy SAIL-Helm project ${LEGACY_PROJECT_REF} ` +
+        `is decommissioning and forbidden. Set VITE_SUPABASE_URL to the SAIL-core ` +
+        `project (${SAIL_CORE_PROJECT_REF}.supabase.co).`,
+    )
+}
+if (projectRef === null) {
+    // URL was present (the prior throw didn't fire) but couldn't be parsed
+    // as a Supabase project URL. Likely a typo, a localhost / proxy URL,
+    // or a non-supabase host. Per the Helm project-isolation policy this
+    // is fatal — never silently accept a non-Supabase URL.
+    throw new Error(
+        `[supabaseClient guard] VITE_SUPABASE_URL="${supabaseUrl}" is not a ` +
+        `recognisable Supabase URL (expected https://<ref>.supabase.<tld>). ` +
+        `Helm only operates against SAIL-core (${SAIL_CORE_PROJECT_REF}.supabase.co).`,
+    )
+}
+if (projectRef !== SAIL_CORE_PROJECT_REF) {
+    throw new Error(
+        `[supabaseClient guard] Invalid Supabase project ref: "${projectRef}" ` +
+        `(from VITE_SUPABASE_URL=${supabaseUrl}). Helm only operates against ` +
+        `SAIL-core (${SAIL_CORE_PROJECT_REF}). Refusing to construct a client.`,
+    )
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Read-only impersonation context (Phase 1)
 // ───────────────────────────────────────────────────────────────────────────
