@@ -1,0 +1,108 @@
+# Helm E2E — Playwright against the real Supabase backend.
+#
+# Locks the seven-test suite in CI so regressions in the Helm UI or its
+# adapter contract with the Bridge backend get caught before merge.
+#
+# Triggers:
+#   - pull_request targeting main (gate merges)
+#   - push to main           (catch direct commits / merge-by-other-means)
+#
+# Path filter: only fires when files under `sail-platform-shell/` change.
+# Root-level docs / unrelated tooling does NOT burn CI minutes.
+#
+# Environment:
+#   - VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY are currently hardcoded
+#     inside `src/lib/supabaseClient.js`, so we do NOT inject them here.
+#     If the env-var parameterization PR (branch
+#     `fix/helm-credential-parameterization`) lands, add the two values
+#     to repo Settings -> Secrets -> Actions and uncomment the `env:`
+#     stanza on the Build step.
+#   - E2E_TEST_PASSWORD overrides the fixture password used in
+#     `e2e/helpers.js`. Optional - falls back to the literal default
+#     if the secret is not configured.
+#
+# Failure artifacts: full playwright-report/ (HTML) + test-results/ raw
+# traces & screenshots are uploaded on failure for offline debugging.
+#
+# Strictness: no retries, no fallbacks. A single flake fails the job
+# (matches local config).
+
+name: e2e
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sail-platform-shell/**'
+      - '.github/workflows/e2e.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'sail-platform-shell/**'
+      - '.github/workflows/e2e.yml'
+
+# Cancel in-flight runs on the same branch when a newer commit lands -
+# saves CI time on rapid push sequences.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  playwright:
+    name: playwright (chromium, headless)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: ./sail-platform-shell
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: sail-platform-shell/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build app
+        run: npm run build
+        # If/when VITE_* are moved off hardcoded literals, uncomment:
+        # env:
+        #   VITE_SUPABASE_URL:      ${{ secrets.VITE_SUPABASE_URL }}
+        #   VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
+      - name: Run Playwright tests
+        # `--reporter=list,html` keeps the live log readable AND emits
+        # the HTML report to playwright-report/ for artifact upload.
+        run: npx playwright test --reporter=list,html
+        env:
+          E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+          # Vite preview boots from `webServer` in playwright.config.js;
+          # no extra env needed here.
+          PLAYWRIGHT_HTML_OPEN: never
+
+      - name: Upload HTML report (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: sail-platform-shell/playwright-report/
+          retention-days: 14
+
+      - name: Upload raw test results (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: sail-platform-shell/test-results/
+          retention-days: 14
