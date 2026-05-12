@@ -12,11 +12,29 @@
 
 import { test, expect } from '@playwright/test'
 import { signIn } from './helpers.js'
+import { cleanupTestAssignments } from './cleanup-fixtures.js'
 
+const TEST_CLASS_ID   = 'eeeeeeee-0000-0000-0000-000000000002'
 const TEST_CLASS_NAME = 'TEST — E2E Lifecycle Class'
-const assignmentTitle = `TEST — E2E Asgn ${Date.now()}`
+const ASSIGNMENT_TITLE_PREFIX = 'TEST — E2E Asgn '
+const assignmentTitle = `${ASSIGNMENT_TITLE_PREFIX}${Date.now()}`
 const submissionText  = 'My E2E test submission, with substance.'
 const gradeValue      = 'A-'
+
+// Pre-test fixture cleanup: delete TEST-titled assignments accumulated
+// from prior runs against the live DB. Without this, the Assignments
+// page slows to a crawl rendering 100+ rows and the lifecycle test's
+// `tr` row scan can blow past the 30 s budget. Cleanup is best-effort
+// (failures are logged + swallowed) so it never blocks the actual
+// test — the test creates a uniquely-titled row regardless.
+test.beforeAll(async () => {
+    const { deleted, scanned } = await cleanupTestAssignments({
+        classId:     TEST_CLASS_ID,
+        titlePrefix: ASSIGNMENT_TITLE_PREFIX,
+    })
+    // eslint-disable-next-line no-console
+    console.log(`[assignments.spec.js] pre-test cleanup: deleted ${deleted}/${scanned} TEST rows`)
+})
 
 test('full assignment lifecycle: create → distribute → submit → grade', async ({ browser }) => {
     // ── Alice's session ────────────────────────────────────────────────

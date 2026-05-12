@@ -320,7 +320,7 @@ export default function Behaviour() {
             const { data, error } = await api.classes.listEnrollments(classId)
             if (cancelled) return
             if (error) { setRosterErr(error); return }
-            const studentsOnly = (data || []).filter((e) => e.role === 'student')
+            const studentsOnly = (data || []).filter((e) => isStudentRole(e.role))
             setRoster(studentsOnly)
             if (studentsOnly.length > 0) setStudentId(studentsOnly[0].user_id)
         })()
