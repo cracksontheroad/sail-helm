@@ -35,8 +35,8 @@ export async function signIn(page, who) {
     await page.getByPlaceholder('Password').fill(TEST_PASSWORD)
     await page.getByRole('button', { name: /Sign In/i }).click()
 
-    // Post-login: admin lands on /, student on /my-grades. Either way
-    // the top bar should show the user's email or role pill.
+    // Post-login: admin lands on /, student on /my-assignments. Either
+    // way the top bar should show the user's email or role pill.
     // Wait for the SAIL Platform header to be visible (it's only there
     // post-login because pre-login uses an h1 "SAIL Platform" too — so
     // we instead wait for the role pill which is post-login only).

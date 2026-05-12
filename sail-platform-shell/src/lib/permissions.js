@@ -64,8 +64,16 @@ export const CAN = {
     // staff-only.
     viewGradebook:        (r) => Boolean(r),
 
-    // Student-facing (future)
-    viewOwnGrades:        (r) => r === 'student',
+    // Student-facing
+    //
+    // viewOwnAssignments replaced the older viewOwnGrades (which gated
+    // the now-removed /my-grades stub). The real student-facing
+    // assignments + submission surface lives at /my-assignments via
+    // the helm_list_assignments_for_student RPC (migration M10).
+    // Per-assignment grade display stays on the existing Gradebook
+    // route which already filters server-side to the student's own
+    // graded rows (CAN.viewGradebook admits students).
+    viewOwnAssignments:   (r) => r === 'student',
     submitAssignment:     (r) => r === 'student',
 
     // Admin
@@ -127,16 +135,16 @@ export const CAN = {
 // Returns the allowed route paths for a given role.
 export function getAllowedRoutes(role) {
     const routes = []
-    if (CAN.viewDashboard(role))   routes.push('/')
-    if (CAN.viewAssignments(role)) routes.push('/assignments')
-    if (CAN.viewGradebook(role))   routes.push('/gradebook')
-    if (CAN.viewOwnGrades(role))   routes.push('/my-grades')
+    if (CAN.viewDashboard(role))      routes.push('/')
+    if (CAN.viewAssignments(role))    routes.push('/assignments')
+    if (CAN.viewGradebook(role))      routes.push('/gradebook')
+    if (CAN.viewOwnAssignments(role)) routes.push('/my-assignments')
     return routes
 }
 
 // ─── Default landing page by role ───────────────────────────────────────────
 export function getDefaultRoute(role) {
     if (isStaff(role)) return '/'
-    if (role === 'student') return '/my-grades'
+    if (role === 'student') return '/my-assignments'
     return '/'
 }
