@@ -20,6 +20,7 @@ import Attendance from './pages/Attendance'
 import CopilotReviewStruggling from './pages/CopilotReviewStruggling'
 import MyAssignments from './pages/MyAssignments'
 import Behaviour from './pages/Behaviour'
+import Timeline from './pages/Timeline'
 
 /**
  * Banner shown across the top of Helm whenever the page was opened with
@@ -272,6 +273,9 @@ function App() {
                 {CAN.viewBehaviour(role) && (
                     <><Link to="/behaviour">Behaviour</Link> | </>
                 )}
+                {CAN.viewTimeline(role) && (
+                    <><Link to="/timeline">Timeline</Link> | </>
+                )}
                 {CAN.useCopilot(role) && (
                     <><Link to="/copilot/review-struggling">Copilot</Link> | </>
                 )}
@@ -307,6 +311,9 @@ function App() {
                 )}
                 {CAN.viewBehaviour(role) && (
                     <Route path="/behaviour" element={<Behaviour />} />
+                )}
+                {CAN.viewTimeline(role) && (
+                    <Route path="/timeline" element={<Timeline />} />
                 )}
                 {CAN.useCopilot(role) && (
                     <Route path="/copilot/review-struggling" element={<CopilotReviewStruggling />} />
