@@ -75,21 +75,25 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Build app
+        # Vite inlines VITE_* at build time, so the secrets must be present
+        # here. supabaseClient.js throws if either is missing — a misconfigured
+        # build fails loudly instead of pointing at the wrong project.
         run: npm run build
-        # If/when VITE_* are moved off hardcoded literals, uncomment:
-        # env:
-        #   VITE_SUPABASE_URL:      ${{ secrets.VITE_SUPABASE_URL }}
-        #   VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        env:
+          VITE_SUPABASE_URL:      ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
 
       - name: Run Playwright tests
         # `--reporter=list,html` keeps the live log readable AND emits
         # the HTML report to playwright-report/ for artifact upload.
         run: npx playwright test --reporter=list,html
         env:
-          E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
-          # Vite preview boots from `webServer` in playwright.config.js;
-          # no extra env needed here.
-          PLAYWRIGHT_HTML_OPEN: never
+          # Vite preview re-reads VITE_* if it ever rebuilds; pass them
+          # along defensively even though the bundle is already built.
+          VITE_SUPABASE_URL:      ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          E2E_TEST_PASSWORD:      ${{ secrets.E2E_TEST_PASSWORD }}
+          PLAYWRIGHT_HTML_OPEN:   never
 
       - name: Upload HTML report (on failure)
         if: failure()

@@ -1,7 +1,23 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = 'https://gidyonbzxjorrgpicctt.supabase.co'
-const supabaseKey = 'sb_publishable_9gCdvH0NEcmkCf_IKuWTvg_vZLpfJ-r'
+// Read from Vite env (inlined at build time). Local dev: copy
+// `.env.example` → `.env` (or `.env.local`) and fill in values. CI:
+// `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` GitHub secrets passed
+// to the Build step in `.github/workflows/e2e.yml`.
+//
+// No literal fallback — a missing value MUST fail loudly. A silent
+// fallback would mask deploy-config bugs and let a misconfigured build
+// silently point at the wrong project.
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+if (!supabaseUrl || !supabaseKey) {
+    throw new Error(
+        '[supabaseClient] Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. ' +
+        'Copy sail-platform-shell/.env.example to .env (or .env.local) and ' +
+        'fill in the values. In CI, configure the GitHub repo secrets and ' +
+        'pass them to the Build step.',
+    )
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Read-only impersonation context (Phase 1)
