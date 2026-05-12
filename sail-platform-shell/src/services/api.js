@@ -511,18 +511,72 @@ export const copilot = {
 
 // ─── Behaviour ────────────────────────────────────────────────────────────
 //
-// STUB (PR 0 only — populated by PR C).
+// Behaviour-events surface (Phase 6A-derived, ported in PR C). Three
+// methods: log a new event, resolve an existing event, and list one
+// student's recent events.
 //
-// Will wrap `bridge_log_behaviour_event` (SECDEF, ready) and
-// `bridge_resolve_behaviour_event` (SECDEF, ready), plus whatever the
-// list RPC turns out to be (the copilot prototype called a function
-// named `listBehaviourForStudent`; the exact RPC name needs to be
-// confirmed before wiring — `bridge_list_behaviour_events` was NOT
-// found on the live DB at PR 0 time).
+// CARVE-OUT (writes): `bridge_log_behaviour_event` and
+// `bridge_resolve_behaviour_event` are SECDEF on the Bridge side and
+// are called directly — Helm does not wrap them.
+//
+// READ wrapped (M11): `helm_list_behaviour_for_student` is the Helm
+// SECDEF wrapper around `bridge_list_behaviour_for_student` (which is
+// SECURITY INVOKER + joins auth.users → "permission denied for table
+// users" for an authenticated client). M11 re-checks permission
+// (self / school-admin / teacher-of-class-with-student) and adds the
+// `status` column (the Bridge function omits it) so the UI can render
+// resolved vs open without a separate refetch.
 
 export const behaviour = {
-    // Intentionally empty. PR C populates: logEvent, resolveEvent,
-    // listForStudent.
+    /**
+     * (Bridge direct) Log a new behaviour event for a student in a
+     * class. Staff-only at the DB layer.
+     * @param {object} args
+     * @param {string} args.studentUserId
+     * @param {string} args.classId
+     * @param {string} args.type     'positive' | 'negative' | 'note'
+     * @param {string} args.note     free text; nullable in the DB
+     * @param {object|null} [args.context]  jsonb audit context
+     */
+    log: ({ studentUserId, classId, type, note, context = null }) =>
+        supabase.rpc('bridge_log_behaviour_event', {
+            p_student_user_id: studentUserId,
+            p_class_id:        classId,
+            p_type:            type,
+            p_note:            note,
+            p_context:         context,
+        }),
+
+    /**
+     * (Bridge direct) Mark a behaviour event as resolved. Staff-only
+     * at the DB layer; the RPC sets `behaviour_events.status = 'resolved'`
+     * and emits a paired audit row. Returns jsonb
+     * `{ behaviour_event_id, school_id, student_user_id, status: 'resolved' }`.
+     * @param {string} eventId
+     */
+    resolve: (eventId) =>
+        supabase.rpc('bridge_resolve_behaviour_event', { p_event_id: eventId }),
+
+    /**
+     * (Helm SECDEF wrapper, M11) List a student's recent behaviour
+     * events. Includes `status` (Bridge omits it). Permission
+     * re-checked server-side: caller is the student themselves OR
+     * admin of their school OR teacher of a class they are enrolled in.
+     * @param {object} args
+     * @param {string} args.studentUserId
+     * @param {number} [args.limit=20]
+     * @param {number} [args.offset=0]
+     *
+     * Row shape: { id, student_user_id, class_id, school_id, type,
+     * note, status, created_by, created_at, class_name, logger_name,
+     * logger_email }.
+     */
+    listForStudent: ({ studentUserId, limit = 20, offset = 0 }) =>
+        supabase.rpc('helm_list_behaviour_for_student', {
+            p_student_user_id: studentUserId,
+            p_limit:           limit,
+            p_offset:          offset,
+        }),
 }
 
 // ─── Timeline ─────────────────────────────────────────────────────────────

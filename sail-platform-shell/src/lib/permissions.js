@@ -106,6 +106,23 @@ export const CAN = {
     viewAttendance:       (r) => Boolean(r),
     markAttendance:       (r) => isStaff(r),
 
+    // Behaviour — per-student events (log + resolve, M11 wrapper read)
+    //
+    // viewBehaviour: any school member. Staff see the per-student
+    // events list under a class context (class selector → student
+    // selector → events). Students see their own events directly
+    // (no selectors). The helm_list_behaviour_for_student RPC
+    // (migration M11) re-checks at the DB layer: caller is the
+    // student themselves OR admin of the student's school OR a
+    // teacher of a class the student is enrolled in.
+    //
+    // logBehaviour: staff only. Gates both the Log form and the
+    // Resolve action. The bridge_log_behaviour_event +
+    // bridge_resolve_behaviour_event RPCs also re-check at the DB
+    // layer (staff-of-school OR manage_behaviour permission).
+    viewBehaviour:        (r) => Boolean(r),
+    logBehaviour:         (r) => isStaff(r),
+
     // Copilot — review_struggling_students v1
     //
     // Staff-only (admin / teacher). The `bridge_copilot_review_struggling`
