@@ -1,0 +1,56 @@
+# Helm governance verifier — fast project-isolation + manifest sanity checks.
+#
+# Runs on every PR + push to main. Independent of the e2e workflow:
+#   - Pure node, no browser, no Playwright, no Supabase calls.
+#   - Sub-30-second job — separates governance failures from test
+#     failures in the CI signal.
+#   - Lives in its own workflow file so it can be required as a
+#     status check independently of e2e in branch protection.
+#
+# What it gates:
+#   - SAIL_SYSTEM_MANIFEST.md still contains the required governance
+#     phrases (existing verify-manifest.mjs)
+#   - package.json declares the expected name + required scripts
+#     (existing verify-package.mjs)
+#   - No tracked source mentions any ref in
+#     governance.config.json.legacySupabaseProjectRefs except in the
+#     exempt paths (new verify-no-legacy-refs.mjs)
+#
+# Triggers: any change that could affect Helm source — broad on
+# purpose. The job is cheap so over-triggering costs almost nothing.
+
+name: governance
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: governance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: governance:verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # No fetch-depth restriction — the verifier uses git ls-files
+        # which only needs the current tree, but cheap to keep the
+        # default behaviour.
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          # No npm cache — governance:verify has zero npm deps,
+          # runs as plain node ESM modules. Skipping cache keeps the
+          # job lean.
+
+      - name: Run governance:verify
+        run: npm run governance:verify

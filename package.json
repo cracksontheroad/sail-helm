@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "governance:verify": "node tools/governance/verify-manifest.mjs && node tools/governance/verify-package.mjs && node tools/governance/verify-no-legacy-refs.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.8",
