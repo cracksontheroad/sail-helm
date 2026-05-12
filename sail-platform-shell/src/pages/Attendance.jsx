@@ -142,20 +142,32 @@ function StaffPanel({ classId }) {
         //   1. Full class enrollment (student-role rows only)
         //   2. Existing attendance session for the date (if any)
         // Merge: each enrolled student + (possibly null) status from the session's records.
-        const { data: enrolls, error: enrErr } = await api.classes.listEnrollments(classId)
+        //
+        // The two RPCs are INDEPENDENT — neither's response feeds the
+        // other's input — so we run them in parallel via Promise.all
+        // to save one RTT. Supabase rpc() resolves the promise on
+        // server response (errors come back in the result object, not
+        // as rejections), so Promise.all settles cleanly with both
+        // results regardless of which has an error; we surface the
+        // first error we find for a deterministic message.
+        const [
+            { data: enrolls,     error: enrErr },
+            { data: sessionData, error: sErr   },
+        ] = await Promise.all([
+            api.classes.listEnrollments(classId),
+            api.attendance.getSessionForDate(classId, date),
+        ])
         if (enrErr) {
             setRError(enrErr.message || 'Could not load roster.')
             setRStatus('error')
             return
         }
-        const students = (enrolls || []).filter((e) => isStudentRole(e.role))
-
-        const { data: sessionData, error: sErr } = await api.attendance.getSessionForDate(classId, date)
         if (sErr) {
             setRError(sErr.message || 'Could not load attendance session.')
             setRStatus('error')
             return
         }
+        const students = (enrolls || []).filter((e) => isStudentRole(e.role))
 
         // sessionData is jsonb: { session: row|null, class: row, records: [...] }
         const records = sessionData?.records || []
