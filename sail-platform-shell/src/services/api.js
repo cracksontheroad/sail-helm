@@ -412,6 +412,69 @@ export const copilot = {
         }),
 
     /**
+     * (Bridge direct, composes two RPCs) Act on an accepted Copilot
+     * suggestion: create an assignment and distribute it to a
+     * specific list of students (NOT the whole class). Returns
+     * `{ assignment, distributedCount }`.
+     *
+     * Why this isn't `api.assignments.create` + `.distribute`:
+     *   - `api.assignments.create` calls `create_assignment` (Helm
+     *     wrapper); this flow needs `bridge_create_assignment` which
+     *     accepts `p_request_id` so the per-transaction GUC
+     *     `app.copilot_request_id` propagates into the resulting
+     *     `assignment.created` audit row.
+     *   - `api.assignments.distribute` distributes to ALL enrolled
+     *     students. This flow needs TARGETED distribution to a
+     *     specific student-id list (typically one student per
+     *     accepted Copilot card).
+     * The request_id propagation makes the Copilot ↔ assignment
+     * audit JOIN deterministic on a single uuid.
+     *
+     * @param {object} args
+     * @param {string} args.classId
+     * @param {string} args.title
+     * @param {string|null} args.description
+     * @param {string[]} args.studentIds          non-empty
+     * @param {string|null} [args.requestId=null] uuid reused from the
+     *                                            suggestions call's request_id
+     * @returns {Promise<{ assignment: object, distributedCount: number }>}
+     */
+    createTargetedAssignment: async ({ classId, title, description, studentIds, requestId = null }) => {
+        if (!classId)                throw new Error('classId is required')
+        if (!title || !title.trim()) throw new Error('title is required')
+        if (!Array.isArray(studentIds) || studentIds.length === 0) {
+            throw new Error('studentIds must be a non-empty array')
+        }
+
+        const { data: createRows, error: createErr } = await supabase.rpc(
+            'bridge_create_assignment',
+            {
+                p_class_id:    classId,
+                p_title:       title,
+                p_description: description || null,
+                p_request_id:  requestId,
+            },
+        )
+        if (createErr) throw createErr
+        const created = Array.isArray(createRows) ? createRows[0] : createRows
+        if (!created || !created.id) {
+            throw new Error('bridge_create_assignment returned no row')
+        }
+
+        const { data: insertedCount, error: distErr } = await supabase.rpc(
+            'bridge_distribute_assignment',
+            {
+                p_assignment_id: created.id,
+                p_student_ids:   studentIds,
+                p_request_id:    requestId,
+            },
+        )
+        if (distErr) throw distErr
+
+        return { assignment: created, distributedCount: insertedCount }
+    },
+
+    /**
      * Generate a fresh request_id for a single Copilot run. Pure helper;
      * not a network call. Same uuid is reused by both the suggestions
      * call and the audit row.

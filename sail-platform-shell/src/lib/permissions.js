@@ -98,6 +98,16 @@ export const CAN = {
     viewAttendance:       (r) => Boolean(r),
     markAttendance:       (r) => isStaff(r),
 
+    // Copilot — review_struggling_students v1
+    //
+    // Staff-only (admin / teacher). The `bridge_copilot_review_struggling`
+    // RPC re-checks at the DB level (caller must be a teacher of the
+    // class OR hold copilot.read), so this CAN.* is the UI gate only.
+    // Students are blocked at the UI to avoid the case where a student
+    // discovers the route from the URL bar and gets a confusing
+    // "permission denied" toast — better to not surface the link.
+    useCopilot:           (r) => isStaff(r),
+
     // Courses (Phase 2 Route 1 — HELM_PHASE_2_SPEC.md §3.1)
     //
     // Every member of a school can view the courses surface. The RPC
