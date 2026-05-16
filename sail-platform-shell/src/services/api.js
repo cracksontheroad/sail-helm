@@ -254,6 +254,29 @@ export const assignments = {
      * @param {boolean} opts.canGrade  — typically `can('helm.submissions.grade')`
      */
     listForGradebook: async ({ classId, canGrade }) => {
+        // Dev-time contract guard: `canGrade` MUST be passed explicitly
+        // as a boolean. The whole point of this helper is that the
+        // permission decision is made by the caller (via `can()`) and
+        // handed in — silently defaulting one way would re-introduce the
+        // exact class of bug this helper was created to prevent (a
+        // student call ending up at the staff RPC and 403'ing, or worse,
+        // a staff call ending up at the student RPC and seeing nothing).
+        //
+        // Throws hard in dev so the misuse is impossible to ignore;
+        // warns + fails closed (treats as student) in prod so a missed
+        // guard doesn't take down the page — the staff branch is the
+        // risky one because it can 403 noisily, so falling back to the
+        // student branch is the safer of the two.
+        if (typeof canGrade !== 'boolean') {
+            const msg = `api.assignments.listForGradebook: \`canGrade\` must be a boolean (got ${typeof canGrade}). The caller is responsible for computing this via can('helm.submissions.grade') and passing it in explicitly.`
+            if (import.meta.env.DEV) {
+                throw new Error(msg)
+            }
+            // eslint-disable-next-line no-console
+            console.warn(`[api.assignments.listForGradebook] ${msg} — falling back to student path.`)
+            canGrade = false
+        }
+
         if (canGrade) {
             return await supabase.rpc('list_class_assignments', { p_class_id: classId })
         }
