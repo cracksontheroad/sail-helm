@@ -284,6 +284,60 @@ function App() {
         }
     }, [role, can])
 
+    // Eighth/ninth/tenth drift probes — Gradebook surface (2026-05-16).
+    // SECOND POLICY CORRECTION BATCH (inverse of Assignments): static
+    // `viewGradebook = Boolean(r)` was the documented current intent
+    // (Gradebook is a unified surface for both staff and students per
+    // MyAssignments.jsx header), but the DB grant restricted to staff.
+    // Resolution: the DB layer was updated to add the student grant
+    // (migration `helm_grant_student_gradebook_view_2026_05_16`) rather
+    // than tightening the UI — preserves the "Don't fork the grade surface"
+    // architectural decision. After the DB grant + this flip, drift
+    // stops firing because all three permissions now align across both
+    // layers.
+    useEffect(() => {
+        const allowedStatic = CAN.viewGradebook(role)
+        const allowedDB     = can('helm.gradebook.view')
+        if (allowedStatic !== allowedDB) {
+            // eslint-disable-next-line no-console
+            console.warn('[Permissions drift]', {
+                permission:    'helm.gradebook.view',
+                staticKey:     'viewGradebook',
+                role,
+                allowedStatic,
+                allowedDB,
+            })
+        }
+    }, [role, can])
+    useEffect(() => {
+        const allowedStatic = CAN.gradeSubmission(role)
+        const allowedDB     = can('helm.submissions.grade')
+        if (allowedStatic !== allowedDB) {
+            // eslint-disable-next-line no-console
+            console.warn('[Permissions drift]', {
+                permission:    'helm.submissions.grade',
+                staticKey:     'gradeSubmission',
+                role,
+                allowedStatic,
+                allowedDB,
+            })
+        }
+    }, [role, can])
+    useEffect(() => {
+        const allowedStatic = CAN.batchGrade(role)
+        const allowedDB     = can('helm.submissions.grade_batch')
+        if (allowedStatic !== allowedDB) {
+            // eslint-disable-next-line no-console
+            console.warn('[Permissions drift]', {
+                permission:    'helm.submissions.grade_batch',
+                staticKey:     'batchGrade',
+                role,
+                allowedStatic,
+                allowedDB,
+            })
+        }
+    }, [role, can])
+
     // Deep-link redirect: when Bridge opens Helm with `?redirect=/path`,
     // navigate there once auth has resolved. We wait for `loading=false`
     // because navigating during the loading phase can race with the
@@ -423,7 +477,13 @@ function App() {
                 {can('helm.assignments.view') && (
                     <><Link to="/assignments">Assignments</Link> | </>
                 )}
-                {CAN.viewGradebook(role) && (
+                {/* Gradebook nav — Gradebook FEATURE-AREA batch
+                    (2026-05-16). Policy correction landed in DB
+                    (student grant for helm.gradebook.view); UI
+                    unchanged. Unified surface preserved: staff +
+                    students both access /gradebook, server-side
+                    filtering keeps the row-level scope correct. */}
+                {can('helm.gradebook.view') && (
                     <><Link to="/gradebook">Gradebook</Link> | </>
                 )}
                 {CAN.viewAttendance(role) && (
@@ -486,7 +546,8 @@ function App() {
                 {can('helm.assignments.view') && (
                     <Route path="/assignments" element={<Assignments />} />
                 )}
-                {CAN.viewGradebook(role) && (
+                {/* /gradebook route — flipped with the batch. */}
+                {can('helm.gradebook.view') && (
                     <Route path="/gradebook" element={<Gradebook />} />
                 )}
                 {CAN.viewAttendance(role) && (

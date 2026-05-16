@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import api from '../services/api'
 import { useAuth } from '../lib/AuthContext'
-import { CAN } from '../lib/permissions'
+import { usePermissions } from '../app/providers/PermissionsProvider'
 
 /**
  * Gradebook — Phase 2 Route 3 of the Helm rebuild.
@@ -24,7 +24,13 @@ import { CAN } from '../lib/permissions'
  * the UX warrants it.
  */
 export default function Gradebook() {
-    const { role, schoolId } = useAuth()
+    const { schoolId } = useAuth()
+    // DB-backed gates (2026-05-16 Gradebook batch). The view/access split
+    // between staff and students is intentional per the architectural
+    // decision documented in MyAssignments.jsx — students access /gradebook
+    // and see their own filtered rows (server-side RPC scope), staff
+    // additionally have grading capability.
+    const { can } = usePermissions()
 
     const [classes, setClasses] = useState([])
     const [selectedClassId, setSelectedClassId] = useState('')
@@ -39,7 +45,7 @@ export default function Gradebook() {
     const [sStatus, setSStatus] = useState('idle')
     const [sError, setSError]   = useState(null)
 
-    const canGrade = CAN.gradeSubmission(role)
+    const canGrade = can('helm.submissions.grade')
 
     const loadClasses = useCallback(async () => {
         if (!schoolId) return
@@ -99,7 +105,7 @@ export default function Gradebook() {
     useEffect(() => { loadAssignments() }, [loadAssignments])
     useEffect(() => { loadSubmissions() }, [loadSubmissions])
 
-    if (!CAN.viewGradebook(role)) {
+    if (!can('helm.gradebook.view')) {
         return (
             <div>
                 <h2>Gradebook</h2>
