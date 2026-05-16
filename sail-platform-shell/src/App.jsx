@@ -399,8 +399,14 @@ function App() {
                     <Route path="/settings" element={<Settings />} />
                 )}
 
-                {/* Student routes */}
-                {CAN.viewOwnAssignments(role) && (
+                {/* Student routes — /my-assignments now end-to-end
+                    can()-controlled (2026-05-16): nav at line ~333 and
+                    this route both gate on can('helm.grades.view_own').
+                    Same pattern as helm.dashboard.view, exercising the
+                    inverse polarity (student-only). When the gate is
+                    false the Route isn't registered and the catch-all
+                    redirects to the caller's defaultRoute. */}
+                {can('helm.grades.view_own') && (
                     <Route path="/my-assignments" element={<MyAssignments />} />
                 )}
 
