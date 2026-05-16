@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Navigate } from 'react-router-dom'
 import api from '../services/api'
 import { useAuth } from '../lib/AuthContext'
+import { usePermissions } from '../app/providers/PermissionsProvider'
 import { CAN, ROLE_LABELS } from '../lib/permissions'
 
 /**
@@ -13,12 +14,20 @@ import { CAN, ROLE_LABELS } from '../lib/permissions'
  *   - Class + assignment counts derived from `api.classes.list()`
  *     (which returns `enrollment_count` and `assignment_count` per
  *     row server-side).
- *   - Member counts only fetched when `CAN.manageSchool(role)` —
+ *   - Member counts only fetched when `can('helm.school.manage')` —
  *     teachers/students do not get a totals card.
  *   - School name fetched via `api.schools.get()` (M7 RPC).
  */
 export default function Dashboard() {
     const { email, role, schoolId } = useAuth()
+    // DB-backed gate for helm.school.manage (controls members-card fetch
+    // and render). viewDashboard and provisionSchool still use static CAN.
+    const { can } = usePermissions()
+    // Hoisted boolean so the data-fetch effect below can declare a stable
+    // primitive dep instead of `can` (whose ref changes on every shadow
+    // state update — would re-fire the effect repeatedly without changing
+    // outcome). The effect now re-runs only when the answer actually flips.
+    const canManageSchool = can('helm.school.manage')
 
     const [schoolName, setSchoolName] = useState(null)
     const [stats, setStats] = useState({
@@ -67,7 +76,7 @@ export default function Dashboard() {
                 // here (e.g. permission denied) should NOT break the rest of
                 // the dashboard — fall back to 0 and log.
                 let membersCount = 0
-                if (CAN.manageSchool(role)) {
+                if (canManageSchool) {
                     const { data: memberRows, error: membersErr } = await api.members.list(schoolId)
                     if (membersErr) {
                         // eslint-disable-next-line no-console
@@ -99,7 +108,7 @@ export default function Dashboard() {
         return () => {
             cancelled = true
         }
-    }, [schoolId, role])
+    }, [schoolId, role, canManageSchool])
 
     // Defensive double-gate. Route registration in App.jsx already gates
     // `/` on CAN.viewDashboard, but if rendered some other way the page
@@ -163,7 +172,7 @@ export default function Dashboard() {
                     <StatCard label="Classes"     value={stats.classes} />
                     <StatCard label="Assignments" value={stats.assignments} />
                     <StatCard label="Students"    value={stats.students} />
-                    {CAN.manageSchool(role) && (
+                    {can('helm.school.manage') && (
                         <StatCard label="Members" value={stats.members} />
                     )}
                 </section>

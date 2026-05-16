@@ -76,27 +76,45 @@ test('full assignment lifecycle: create → distribute → submit → grade', as
     const bobPage = await bobCtx.newPage()
     await signIn(bobPage, 'bob')
 
-    // Bob navigates to Assignments (the staff/student class-listing
-    // surface) and selects the same class. Use `exact: true` so the
-    // regex doesn't also match the student-only "My Assignments" link
-    // PR B added to bob's nav.
-    await bobPage.getByRole('link', { name: 'Assignments', exact: true }).click()
-    await bobPage.locator('select').first()
-        .selectOption('eeeeeeee-0000-0000-0000-000000000002')
+    // Bob's submission surface is /my-assignments (the dedicated student
+    // page introduced in PR B). The /assignments page was the staff/student
+    // shared surface in Phase 2 R2 but is now staff-only — the policy
+    // correction in the RBAC migration (PR #12) tightened
+    // `helm.assignments.view` to staff per the DB grants, removing the
+    // redundant secondary student submission path. Bob's nav no longer
+    // shows the "Assignments" link.
+    //
+    // MyAssignments renders a flat cross-class card list with the title,
+    // class name, status pill ("not submitted" / "✓ submitted"), and —
+    // for unsubmitted rows — a textarea + Submit button inline. We locate
+    // the lifecycle row by its uniquely-timestamped title.
+    await bobPage.getByRole('link', { name: /^My Assignments$/i }).click()
+    await expect(bobPage.getByRole('heading', { name: 'My Assignments' })).toBeVisible()
 
-    const bobRow = bobPage.locator('tr', { hasText: assignmentTitle })
+    // Locate bob's lifecycle row card. The card is the innermost div that
+    // has BOTH the assignment title AND a textarea descendant — `.last()`
+    // gives that innermost match (Playwright returns descendant locators
+    // in DOM order; outermost first, innermost last). Anchoring on the
+    // textarea also disambiguates from already-submitted leftovers in
+    // bob's cross-class list.
+    const bobRow = bobPage.locator('div', { hasText: assignmentTitle })
+        .filter({ has: bobPage.locator('textarea') })
+        .last()
     await expect(bobRow).toBeVisible({ timeout: 10_000 })
-
-    // Bob's status should be 'assigned' (distributed but not yet submitted).
-    await expect(bobRow).toContainText(/assigned/i)
+    await expect(bobRow).toContainText(/not submitted/i)
 
     // Submit.
-    await bobRow.getByRole('button', { name: /^Details$/i }).click()
-    await bobPage.getByRole('textbox').last().fill(submissionText)
-    await bobPage.getByRole('button', { name: /^Submit$/i }).click()
+    await bobRow.locator('textarea').fill(submissionText)
+    await bobRow.getByRole('button', { name: /^Submit$/i }).click()
 
-    // After re-fetch the my_status should flip to 'submitted'.
-    await expect(bobPage.locator('tr', { hasText: assignmentTitle })).toContainText(/submitted/i, { timeout: 10_000 })
+    // After the row re-renders post-submit, the title-bearing card flips
+    // to the "✓ submitted" state and the textarea + Submit button are
+    // replaced by a read-only submitted panel.
+    await expect(
+        bobPage.locator('div', { hasText: assignmentTitle })
+            .filter({ hasText: /✓ submitted/ })
+            .last()
+    ).toBeVisible({ timeout: 10_000 })
 
     // ── Alice grades in Gradebook ─────────────────────────────────────
     await alicePage.getByRole('link', { name: /Gradebook/i }).click()

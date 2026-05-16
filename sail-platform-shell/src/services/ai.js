@@ -4,8 +4,16 @@
 // All AI calls go through /.netlify/functions/ai-proxy.
 // No API keys exist in frontend code.
 //
+// Auth (2026-05-16): the proxy now verifies the inbound Supabase JWT
+// before any OpenAI call. Every request from this client MUST carry
+// `Authorization: Bearer <access_token>` from the current session.
+// `callAI()` reads the session from supabase-js and fails early when
+// none exists — never falls back to an unauthenticated call.
+//
 // Future: add request deduplication, client-side rate limiting, retry logic.
 // ═══════════════════════════════════════════════════════════════════════════════
+
+import { supabase } from '../lib/supabaseClient'
 
 const AI_PROXY_URL = '/.netlify/functions/ai-proxy'
 
@@ -33,11 +41,26 @@ export async function callAI({
     role = null,
     deploymentMode = null,
 }) {
+    // Fail closed when there's no session. We deliberately do NOT fall
+    // back to an unauthenticated call — that would reintroduce the
+    // exact vulnerability the proxy's JWT gate exists to prevent.
+    const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
+    if (sessionErr) {
+        throw new Error(`AI proxy auth error: could not read session — ${sessionErr.message}`)
+    }
+    const token = sessionData?.session?.access_token
+    if (!token) {
+        throw new Error('AI proxy auth error: no active session. Sign in before calling AI features.')
+    }
+
     let response
     try {
         response = await fetch(AI_PROXY_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type':   'application/json',
+                'Authorization':  `Bearer ${token}`,
+            },
             body: JSON.stringify({
                 system,
                 prompt,

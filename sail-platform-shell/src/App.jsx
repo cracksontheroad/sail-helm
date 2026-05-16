@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Routes, Route, Link, Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from './lib/AuthContext'
+import { usePermissions } from './app/providers/PermissionsProvider'
 import { CAN, ROLE_LABELS, getDefaultRoute } from './lib/permissions'
 import {
     impersonatedUserId,
@@ -142,21 +143,37 @@ function App() {
     // navigate again (the URL still contains ?redirect=…).
     const didRedirectRef = useRef(false)
 
+    // DB-backed permission gate used throughout the nav + routes below.
+    // The earlier drift probes that compared can() against static CAN.*
+    // for each migrated permission have been removed after 7 successive
+    // batches of zero-drift verification — see commit history for the
+    // observational data they produced. `can()` is now the sole source
+    // of truth for migrated permissions; the static CAN.* entries that
+    // remain are for surfaces that haven't been migrated yet (courses /
+    // attendance / behaviour / timeline / copilot / provisioning, plus
+    // a few defensive page-level double-gates).
+    const { can, loading: permissionsLoading } = usePermissions()
+
     // Deep-link redirect: when Bridge opens Helm with `?redirect=/path`,
-    // navigate there once auth has resolved. We wait for `loading=false`
-    // because navigating during the loading phase can race with the
-    // route-table render. We don't gate on `user` because the redirect
-    // is desirable even on the login page (after sign-in completes,
-    // Helm's existing flow lands on the role-default route — the
-    // redirect overrides that and lands the operator on the support
-    // target instead).
+    // navigate there once auth + permissions have BOTH resolved. We wait
+    // for `loading=false` AND `permissionsLoading=false` because
+    // navigating during either loading phase races with the route-table
+    // render — routes are gated on can() and won't register until
+    // permissions resolve, so a too-early navigate hits the catch-all
+    // and silently redirects to the role-default route instead of the
+    // requested deep-link target. We don't gate on `user` because the
+    // redirect is desirable even on the login page (after sign-in
+    // completes, Helm's existing flow lands on the role-default route
+    // — the redirect overrides that and lands the operator on the
+    // support target instead).
     useEffect(() => {
         if (loading) return
+        if (permissionsLoading) return
         if (didRedirectRef.current) return
         if (!impersonationRedirect) return
         didRedirectRef.current = true
         navigate(impersonationRedirect, { replace: true })
-    }, [loading, navigate])
+    }, [loading, permissionsLoading, navigate])
 
     // Show loading spinner while checking auth
     if (loading) {
@@ -170,6 +187,25 @@ function App() {
     // Not logged in → show login
     if (!user) {
         return <Login />
+    }
+
+    // Auth resolved but permissions still fetching. Without this guard the
+    // main render below would compute its Routes block with can() returning
+    // false for everything (shadow not yet bound to current authKey), no
+    // permission-gated route would register, and the catch-all would
+    // silently redirect deep-links to the role-default route. Brief
+    // loading state is preferable to that silent breakage.
+    //
+    // Safe to gate above the !role branch below: `permissionsLoading` is
+    // `isAuthed && (...)` where `isAuthed` requires both authUserId AND
+    // authSchoolId — so unprovisioned users (no school) skip this guard
+    // entirely and land in the provisioning flow without waiting.
+    if (permissionsLoading) {
+        return (
+            <div style={{ padding: 40, textAlign: 'center', color: '#888' }}>
+                Loading...
+            </div>
+        )
     }
 
     // Logged in but no role found in school_members.
@@ -255,16 +291,39 @@ function App() {
             </div>
 
             <nav>
-                {CAN.viewDashboard(role) && (
+                {/* FIRST REAL can() CONSUMER (2026-05-16): the Dashboard
+                    nav link is gated by the DB-backed PermissionsProvider
+                    via `can('helm.dashboard.view')` instead of the static
+                    `CAN.viewDashboard(role)` predicate. The drift probe
+                    in the useEffect above continues to compare the two
+                    paths and console.warn on divergence — both as
+                    runtime assertion during this transition AND so
+                    expanding to additional gates remains an observable
+                    rollout. The route gate below (line 325) still uses
+                    static CAN as a safety belt; flip routes only after
+                    additional consumers soak cleanly. */}
+                {can('helm.dashboard.view') && (
                     <><Link to="/">Dashboard</Link> | </>
                 )}
                 {CAN.viewCourses(role) && (
                     <><Link to="/courses">Courses</Link> | </>
                 )}
-                {CAN.viewAssignments(role) && (
+                {/* Assignments nav — Assignments FEATURE-AREA batch
+                    (2026-05-16). This batch INTENTIONALLY tightens the
+                    student-side: static `Boolean(r)` admitted any role
+                    (Phase 2 R2 transitional state), but DB grants restrict
+                    to staff. Students now use /my-assignments for their
+                    own assignments + submission (already on can()). */}
+                {can('helm.assignments.view') && (
                     <><Link to="/assignments">Assignments</Link> | </>
                 )}
-                {CAN.viewGradebook(role) && (
+                {/* Gradebook nav — Gradebook FEATURE-AREA batch
+                    (2026-05-16). Policy correction landed in DB
+                    (student grant for helm.gradebook.view); UI
+                    unchanged. Unified surface preserved: staff +
+                    students both access /gradebook, server-side
+                    filtering keeps the row-level scope correct. */}
+                {can('helm.gradebook.view') && (
                     <><Link to="/gradebook">Gradebook</Link> | </>
                 )}
                 {CAN.viewAttendance(role) && (
@@ -279,13 +338,25 @@ function App() {
                 {CAN.useCopilot(role) && (
                     <><Link to="/copilot/review-struggling">Copilot</Link> | </>
                 )}
-                {CAN.viewMembers(role) && (
+                {/* Members nav — first FEATURE-AREA batch (2026-05-16).
+                    Nav + route below + Members.jsx page gate all flip
+                    together to can('helm.members.view'). */}
+                {can('helm.members.view') && (
                     <><Link to="/members">Members</Link> | </>
                 )}
-                {CAN.manageSchool(role) && (
+                {/* Settings nav — School/Settings FEATURE-AREA batch
+                    (2026-05-16). Five-surface migration across App.jsx
+                    (nav + route) + Settings.jsx (page gate) + Dashboard.jsx
+                    (members-fetch gate + stat-card render). */}
+                {can('helm.school.manage') && (
                     <><Link to="/settings">Settings</Link></>
                 )}
-                {CAN.viewOwnAssignments(role) && (
+                {/* Second can() consumer (2026-05-16): My Assignments nav.
+                    Same pattern as the Dashboard flip — DB-backed via
+                    can('helm.grades.view_own'). The route below (~line 368)
+                    still uses static CAN.viewOwnAssignments(role) as the
+                    safety belt; flip routes after the nav has soaked. */}
+                {can('helm.grades.view_own') && (
                     <><Link to="/my-assignments">My Assignments</Link></>
                 )}
             </nav>
@@ -294,16 +365,29 @@ function App() {
 
             <Routes>
                 {/* Staff routes */}
-                {CAN.viewDashboard(role) && (
+                {/* Dashboard route — also gated by can() (2026-05-16),
+                    matching the nav link above. Completes end-to-end
+                    DB-backed control for `helm.dashboard.view`:
+                    nav visibility + route registration both driven by
+                    the same source of truth. When can() returns false,
+                    this Route isn't registered and the catch-all at
+                    the bottom (<Navigate to={defaultRoute} />) handles
+                    the redirect for direct URL hits. Other routes
+                    remain on static CAN until they migrate. */}
+                {can('helm.dashboard.view') && (
                     <Route path="/" element={<Dashboard />} />
                 )}
                 {CAN.viewCourses(role) && (
                     <Route path="/courses" element={<Courses />} />
                 )}
-                {CAN.viewAssignments(role) && (
+                {/* /assignments route — flipped with the batch. When can()
+                    returns false the Route isn't registered; the catch-all
+                    redirects students to their defaultRoute (/my-assignments). */}
+                {can('helm.assignments.view') && (
                     <Route path="/assignments" element={<Assignments />} />
                 )}
-                {CAN.viewGradebook(role) && (
+                {/* /gradebook route — flipped with the batch. */}
+                {can('helm.gradebook.view') && (
                     <Route path="/gradebook" element={<Gradebook />} />
                 )}
                 {CAN.viewAttendance(role) && (
@@ -318,15 +402,25 @@ function App() {
                 {CAN.useCopilot(role) && (
                     <Route path="/copilot/review-struggling" element={<CopilotReviewStruggling />} />
                 )}
-                {CAN.viewMembers(role) && (
+                {/* Members route — flipped together with the nav and
+                    Members.jsx page gate in the same batch. */}
+                {can('helm.members.view') && (
                     <Route path="/members" element={<Members />} />
                 )}
-                {CAN.manageSchool(role) && (
+                {/* Settings route — flipped with the rest of the
+                    School/Settings batch (2026-05-16). */}
+                {can('helm.school.manage') && (
                     <Route path="/settings" element={<Settings />} />
                 )}
 
-                {/* Student routes */}
-                {CAN.viewOwnAssignments(role) && (
+                {/* Student routes — /my-assignments now end-to-end
+                    can()-controlled (2026-05-16): nav at line ~333 and
+                    this route both gate on can('helm.grades.view_own').
+                    Same pattern as helm.dashboard.view, exercising the
+                    inverse polarity (student-only). When the gate is
+                    false the Route isn't registered and the catch-all
+                    redirects to the caller's defaultRoute. */}
+                {can('helm.grades.view_own') && (
                     <Route path="/my-assignments" element={<MyAssignments />} />
                 )}
 
