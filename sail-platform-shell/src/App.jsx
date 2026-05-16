@@ -213,6 +213,27 @@ function App() {
         }
     }, [role, can])
 
+    // Fourth drift probe — `helm.school.manage` (2026-05-16). School/Settings
+    // is the second FEATURE-AREA batch: nav + route + Settings.jsx page-level
+    // gate + two Dashboard.jsx usages (members-fetch gate + members stat-card
+    // render). Same shape as members: static `isAdmin(r)` admits admin OR
+    // super_admin; DB admits admin only → drift surfaces for super_admin
+    // sessions only.
+    useEffect(() => {
+        const allowedStatic = CAN.manageSchool(role)
+        const allowedDB     = can('helm.school.manage')
+        if (allowedStatic !== allowedDB) {
+            // eslint-disable-next-line no-console
+            console.warn('[Permissions drift]', {
+                permission:    'helm.school.manage',
+                staticKey:     'manageSchool',
+                role,
+                allowedStatic,
+                allowedDB,
+            })
+        }
+    }, [role, can])
+
     // Deep-link redirect: when Bridge opens Helm with `?redirect=/path`,
     // navigate there once auth has resolved. We wait for `loading=false`
     // because navigating during the loading phase can race with the
@@ -367,7 +388,11 @@ function App() {
                 {can('helm.members.view') && (
                     <><Link to="/members">Members</Link> | </>
                 )}
-                {CAN.manageSchool(role) && (
+                {/* Settings nav — School/Settings FEATURE-AREA batch
+                    (2026-05-16). Five-surface migration across App.jsx
+                    (nav + route) + Settings.jsx (page gate) + Dashboard.jsx
+                    (members-fetch gate + stat-card render). */}
+                {can('helm.school.manage') && (
                     <><Link to="/settings">Settings</Link></>
                 )}
                 {/* Second can() consumer (2026-05-16): My Assignments nav.
@@ -422,7 +447,9 @@ function App() {
                 {can('helm.members.view') && (
                     <Route path="/members" element={<Members />} />
                 )}
-                {CAN.manageSchool(role) && (
+                {/* Settings route — flipped with the rest of the
+                    School/Settings batch (2026-05-16). */}
+                {can('helm.school.manage') && (
                     <Route path="/settings" element={<Settings />} />
                 )}
 

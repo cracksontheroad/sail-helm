@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import api from '../services/api'
 import { useAuth } from '../lib/AuthContext'
-import { CAN } from '../lib/permissions'
+import { usePermissions } from '../app/providers/PermissionsProvider'
 
 /**
  * Settings — Phase 1 Route 4 of the Helm rebuild (HELM_REBUILD_PLAN.md §3).
@@ -20,11 +20,16 @@ import { CAN } from '../lib/permissions'
  *     "draft"; the saved state comes from the round-trip back to
  *     Supabase. Planner direction (2026-05-12): no local optimistic
  *     mutation without server confirmation.
- *   - Gating: `CAN.manageSchool(role)` at the page level and in the
- *     route registration. Non-admins do not see Settings.
+ *   - Gating: `can('helm.school.manage')` at the page level and in the
+ *     route registration (App.jsx). Non-admins do not see Settings.
+ *     DB-backed via PermissionsProvider; static CAN.manageSchool is no
+ *     longer consulted here (migrated 2026-05-16).
  */
 export default function Settings() {
-    const { role, schoolId } = useAuth()
+    const { schoolId } = useAuth()
+    // DB-backed page-level gate. Route registration in App.jsx already
+    // gates on the same permission; this is defense in depth.
+    const { can } = usePermissions()
 
     const [savedName, setSavedName] = useState('')
     const [draftName, setDraftName] = useState('')
@@ -59,7 +64,7 @@ export default function Settings() {
     }, [loadSettings])
 
     // Defensive page-level gate.
-    if (!CAN.manageSchool(role)) {
+    if (!can('helm.school.manage')) {
         return (
             <div>
                 <h2>Settings</h2>
