@@ -189,12 +189,21 @@ function App() {
         return <Login />
     }
 
-    // Auth resolved but permissions still fetching. Without this guard the
-    // main render below would compute its Routes block with can() returning
-    // false for everything (shadow not yet bound to current authKey), no
-    // permission-gated route would register, and the catch-all would
-    // silently redirect deep-links to the role-default route. Brief
-    // loading state is preferable to that silent breakage.
+    // ══════════════════════════════════════════════════════════════
+    // INVARIANT (do not remove without re-reading PR #12):
+    //   Routes must NOT render until permissions resolve.
+    // ══════════════════════════════════════════════════════════════
+    //
+    // `can()` returns false for everything during the in-flight window
+    // between auth resolving and the permissions fetch completing
+    // (shadow not yet bound to current authKey). If the main render
+    // computes its Routes block in that window, no permission-gated
+    // route registers and the catch-all silently redirects deep-links
+    // to the role-default route — every bookmark, every Bridge
+    // `?redirect=` handoff, every shared link breaks.
+    //
+    // Brief "Loading..." state is the right trade-off. See
+    // PermissionsProvider header (INVARIANT II) for the full rule.
     //
     // Safe to gate above the !role branch below: `permissionsLoading` is
     // `isAuthed && (...)` where `isAuthed` requires both authUserId AND

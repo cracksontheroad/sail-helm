@@ -7,6 +7,38 @@
  * function (plus a few convenience fields) for consumers to gate UI
  * + side effects.
  *
+ * ══════════════════════════════════════════════════════════════════
+ * ARCHITECTURAL INVARIANTS (do not break — hard-earned, see PR #12)
+ * ══════════════════════════════════════════════════════════════════
+ *
+ *   I. `can()` IS THE ONLY ACCESS API.
+ *      All UI access decisions go through `can('permission.key')`.
+ *      Direct role checks (`role === 'admin'`, `isStaff(role)`) are
+ *      for DATA FILTERING and UX BRANCHING ONLY — never for gating
+ *      capabilities. See `src/lib/permissions.js` header for the
+ *      full rule + the documented exceptions.
+ *
+ *  II. `can()` IS ASYNC-RESOLVED. Routes must NOT render until
+ *      permissions resolve.
+ *      During the in-flight window between auth resolving and the
+ *      permissions fetch completing, `can()` returns `false` for
+ *      everything (the shadow gate hasn't bound to the current
+ *      authKey yet). Code paths that compute against `can()` during
+ *      that window will see false negatives. App.jsx gates the main
+ *      render on `permissionsLoading` for exactly this reason —
+ *      deep-link to a permission-gated route would otherwise
+ *      silently catch-all-redirect to the role-default route.
+ *
+ * III. FRONTEND MAY NARROW SCOPE, NEVER EXPAND IT.
+ *      RPCs are scope-enforced server-side (RLS / SECDEF). The
+ *      frontend may filter results client-side to a smaller set
+ *      (e.g. show student's own grades from a returned row list),
+ *      but must NEVER call an RPC the current role isn't admitted
+ *      to in hopes of getting wider data — the server will deny,
+ *      noise the console, and signal a frontend bug. See
+ *      `api.assignments.listForGradebook` for a working example of
+ *      role-aware RPC dispatch.
+ *
  * Contract:
  *   {
  *     role         : string | null         — school-scoped role (from RPC)

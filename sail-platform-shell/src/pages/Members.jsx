@@ -112,6 +112,12 @@ export default function Members() {
     }
 
     async function handleRoleChange(member, nextRole) {
+        // RBAC note: this is a data-equality check on the SAME row's
+        // current vs proposed role (no-op skip when the user picks the
+        // role already in effect). NOT a permission gate — actual
+        // permission to change roles is enforced by `addMember` /
+        // `changeMemberRole` static CAN at render time and re-checked
+        // server-side by the `update_school_member_role` RPC.
         if (member.role === nextRole) return
         // list_school_members returns `id` (the school_members row id),
         // not `member_id`. The api wrapper passes it as p_member_id
