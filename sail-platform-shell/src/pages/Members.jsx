@@ -18,9 +18,12 @@ import { CAN, ROLE_LABELS } from '../lib/permissions'
  *     `update_school_member_role(...)`. The client NEVER writes to
  *     `school_members` — both writes set the role column server-side
  *     (Block 10 / PR-08 forbids client-side role assignment).
- *   - CAN.viewMembers / CAN.addMember / CAN.changeMemberRole gate
- *     visibility. Non-admins do not reach this page (route is gated
- *     in App.jsx) and the component double-checks defensively.
+ *   - can('helm.members.view') gates page-level access (route is also
+ *     gated in App.jsx; this is defense in depth). CAN.addMember /
+ *     CAN.changeMemberRole still gate the per-row affordances and
+ *     the add-member form — they remain on static CAN until the DB
+ *     gains corresponding `helm.members.add` / `helm.members.update`
+ *     grants.
  */
 
 const ASSIGNABLE_ROLES = ['student', 'teacher', 'admin']
@@ -29,8 +32,8 @@ export default function Members() {
     const { role, schoolId } = useAuth()
     // DB-backed gate for the page-level access check below. Sibling
     // affordances (addMember, changeMemberRole) still use static CAN
-    // because they don't yet have a DB-permission counterpart in
-    // PERMISSION_TO_CAN_KEY; flip those when they do.
+    // because they don't yet have DB-permission counterparts; flip
+    // those when corresponding helm.* keys are added.
     const { can } = usePermissions()
 
     const [members, setMembers] = useState([])

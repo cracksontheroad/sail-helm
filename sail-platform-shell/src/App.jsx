@@ -143,216 +143,37 @@ function App() {
     // navigate again (the URL still contains ?redirect=…).
     const didRedirectRef = useRef(false)
 
-    // ── First DB-permission consumer (observation-only) ────────────────
-    // FOUNDATION step: read can() from the new DB-backed PermissionsProvider
-    // and compare its answer for `helm.dashboard.view` against the existing
-    // static `CAN.viewDashboard(role)` gate. The render decision below
-    // (`{CAN.viewDashboard(role) && <Link to="/">Dashboard</Link>}`) is
-    // INTENTIONALLY UNCHANGED — static remains the source of truth for
-    // visibility. The dual-check exists so a divergence (e.g. DB grants
-    // drift away from the static predicate, or a role we haven't mapped
-    // yet signs in) is observable via a console warning rather than
-    // silently rendering the wrong UI. Remove or expand to additional
-    // gates after the foundation has soaked.
-    const { can } = usePermissions()
-    useEffect(() => {
-        const allowedStatic = CAN.viewDashboard(role)
-        const allowedDB     = can('helm.dashboard.view')
-        if (allowedStatic !== allowedDB) {
-            // eslint-disable-next-line no-console
-            console.warn('[Permissions drift]', {
-                permission:    'helm.dashboard.view',
-                staticKey:     'viewDashboard',
-                role,
-                allowedStatic,
-                allowedDB,
-            })
-        }
-    }, [role, can])
-
-    // Second drift probe — `helm.grades.view_own` (2026-05-16). Same shape as
-    // the dashboard probe above. Picked specifically because it inverts the
-    // role polarity (dashboard = staff-only; grades.view_own = student-only)
-    // and uses a different static predicate shape (`r === 'student'` vs
-    // `isStaff(r)`). If anything in the permissions layer were subtly biased
-    // toward higher-rank roles, this is where it would surface.
-    useEffect(() => {
-        const allowedStatic = CAN.viewOwnAssignments(role)
-        const allowedDB     = can('helm.grades.view_own')
-        if (allowedStatic !== allowedDB) {
-            // eslint-disable-next-line no-console
-            console.warn('[Permissions drift]', {
-                permission:    'helm.grades.view_own',
-                staticKey:     'viewOwnAssignments',
-                role,
-                allowedStatic,
-                allowedDB,
-            })
-        }
-    }, [role, can])
-
-    // Third drift probe — `helm.members.view` (2026-05-16). Members is the
-    // first FEATURE-AREA batch migration: nav + route + Members.jsx page-
-    // level gate all flip together. Static `isAdmin(r)` admits admin OR
-    // super_admin; DB grants admit admin only — so this probe would fire
-    // for super_admin sessions (none in current fixtures, but the
-    // observable warning is what would catch a future super_admin signing
-    // in before the static predicate is tightened or the DB grant added).
-    useEffect(() => {
-        const allowedStatic = CAN.viewMembers(role)
-        const allowedDB     = can('helm.members.view')
-        if (allowedStatic !== allowedDB) {
-            // eslint-disable-next-line no-console
-            console.warn('[Permissions drift]', {
-                permission:    'helm.members.view',
-                staticKey:     'viewMembers',
-                role,
-                allowedStatic,
-                allowedDB,
-            })
-        }
-    }, [role, can])
-
-    // Fourth drift probe — `helm.school.manage` (2026-05-16). School/Settings
-    // is the second FEATURE-AREA batch: nav + route + Settings.jsx page-level
-    // gate + two Dashboard.jsx usages (members-fetch gate + members stat-card
-    // render). Same shape as members: static `isAdmin(r)` admits admin OR
-    // super_admin; DB admits admin only → drift surfaces for super_admin
-    // sessions only.
-    useEffect(() => {
-        const allowedStatic = CAN.manageSchool(role)
-        const allowedDB     = can('helm.school.manage')
-        if (allowedStatic !== allowedDB) {
-            // eslint-disable-next-line no-console
-            console.warn('[Permissions drift]', {
-                permission:    'helm.school.manage',
-                staticKey:     'manageSchool',
-                role,
-                allowedStatic,
-                allowedDB,
-            })
-        }
-    }, [role, can])
-
-    // Fifth/sixth/seventh drift probes — Assignments surface (2026-05-16).
-    // FIRST INTENTIONAL DRIFT BATCH: static `viewAssignments(r) = Boolean(r)`
-    // is overly permissive (Phase 2 R2 transitional state — students still
-    // had /assignments access before /my-assignments shipped); DB grants
-    // restrict to staff. The flip below tightens UI to match DB, removing
-    // a redundant secondary student surface. After the flip, drift stops
-    // firing because both paths agree.
-    useEffect(() => {
-        const allowedStatic = CAN.viewAssignments(role)
-        const allowedDB     = can('helm.assignments.view')
-        if (allowedStatic !== allowedDB) {
-            // eslint-disable-next-line no-console
-            console.warn('[Permissions drift]', {
-                permission:    'helm.assignments.view',
-                staticKey:     'viewAssignments',
-                role,
-                allowedStatic,
-                allowedDB,
-            })
-        }
-    }, [role, can])
-    useEffect(() => {
-        const allowedStatic = CAN.createAssignment(role)
-        const allowedDB     = can('helm.assignments.create')
-        if (allowedStatic !== allowedDB) {
-            // eslint-disable-next-line no-console
-            console.warn('[Permissions drift]', {
-                permission:    'helm.assignments.create',
-                staticKey:     'createAssignment',
-                role,
-                allowedStatic,
-                allowedDB,
-            })
-        }
-    }, [role, can])
-    useEffect(() => {
-        const allowedStatic = CAN.submitAssignment(role)
-        const allowedDB     = can('helm.assignments.submit')
-        if (allowedStatic !== allowedDB) {
-            // eslint-disable-next-line no-console
-            console.warn('[Permissions drift]', {
-                permission:    'helm.assignments.submit',
-                staticKey:     'submitAssignment',
-                role,
-                allowedStatic,
-                allowedDB,
-            })
-        }
-    }, [role, can])
-
-    // Eighth/ninth/tenth drift probes — Gradebook surface (2026-05-16).
-    // SECOND POLICY CORRECTION BATCH (inverse of Assignments): static
-    // `viewGradebook = Boolean(r)` was the documented current intent
-    // (Gradebook is a unified surface for both staff and students per
-    // MyAssignments.jsx header), but the DB grant restricted to staff.
-    // Resolution: the DB layer was updated to add the student grant
-    // (migration `helm_grant_student_gradebook_view_2026_05_16`) rather
-    // than tightening the UI — preserves the "Don't fork the grade surface"
-    // architectural decision. After the DB grant + this flip, drift
-    // stops firing because all three permissions now align across both
-    // layers.
-    useEffect(() => {
-        const allowedStatic = CAN.viewGradebook(role)
-        const allowedDB     = can('helm.gradebook.view')
-        if (allowedStatic !== allowedDB) {
-            // eslint-disable-next-line no-console
-            console.warn('[Permissions drift]', {
-                permission:    'helm.gradebook.view',
-                staticKey:     'viewGradebook',
-                role,
-                allowedStatic,
-                allowedDB,
-            })
-        }
-    }, [role, can])
-    useEffect(() => {
-        const allowedStatic = CAN.gradeSubmission(role)
-        const allowedDB     = can('helm.submissions.grade')
-        if (allowedStatic !== allowedDB) {
-            // eslint-disable-next-line no-console
-            console.warn('[Permissions drift]', {
-                permission:    'helm.submissions.grade',
-                staticKey:     'gradeSubmission',
-                role,
-                allowedStatic,
-                allowedDB,
-            })
-        }
-    }, [role, can])
-    useEffect(() => {
-        const allowedStatic = CAN.batchGrade(role)
-        const allowedDB     = can('helm.submissions.grade_batch')
-        if (allowedStatic !== allowedDB) {
-            // eslint-disable-next-line no-console
-            console.warn('[Permissions drift]', {
-                permission:    'helm.submissions.grade_batch',
-                staticKey:     'batchGrade',
-                role,
-                allowedStatic,
-                allowedDB,
-            })
-        }
-    }, [role, can])
+    // DB-backed permission gate used throughout the nav + routes below.
+    // The earlier drift probes that compared can() against static CAN.*
+    // for each migrated permission have been removed after 7 successive
+    // batches of zero-drift verification — see commit history for the
+    // observational data they produced. `can()` is now the sole source
+    // of truth for migrated permissions; the static CAN.* entries that
+    // remain are for surfaces that haven't been migrated yet (courses /
+    // attendance / behaviour / timeline / copilot / provisioning, plus
+    // a few defensive page-level double-gates).
+    const { can, loading: permissionsLoading } = usePermissions()
 
     // Deep-link redirect: when Bridge opens Helm with `?redirect=/path`,
-    // navigate there once auth has resolved. We wait for `loading=false`
-    // because navigating during the loading phase can race with the
-    // route-table render. We don't gate on `user` because the redirect
-    // is desirable even on the login page (after sign-in completes,
-    // Helm's existing flow lands on the role-default route — the
-    // redirect overrides that and lands the operator on the support
-    // target instead).
+    // navigate there once auth + permissions have BOTH resolved. We wait
+    // for `loading=false` AND `permissionsLoading=false` because
+    // navigating during either loading phase races with the route-table
+    // render — routes are gated on can() and won't register until
+    // permissions resolve, so a too-early navigate hits the catch-all
+    // and silently redirects to the role-default route instead of the
+    // requested deep-link target. We don't gate on `user` because the
+    // redirect is desirable even on the login page (after sign-in
+    // completes, Helm's existing flow lands on the role-default route
+    // — the redirect overrides that and lands the operator on the
+    // support target instead).
     useEffect(() => {
         if (loading) return
+        if (permissionsLoading) return
         if (didRedirectRef.current) return
         if (!impersonationRedirect) return
         didRedirectRef.current = true
         navigate(impersonationRedirect, { replace: true })
-    }, [loading, navigate])
+    }, [loading, permissionsLoading, navigate])
 
     // Show loading spinner while checking auth
     if (loading) {
@@ -366,6 +187,25 @@ function App() {
     // Not logged in → show login
     if (!user) {
         return <Login />
+    }
+
+    // Auth resolved but permissions still fetching. Without this guard the
+    // main render below would compute its Routes block with can() returning
+    // false for everything (shadow not yet bound to current authKey), no
+    // permission-gated route would register, and the catch-all would
+    // silently redirect deep-links to the role-default route. Brief
+    // loading state is preferable to that silent breakage.
+    //
+    // Safe to gate above the !role branch below: `permissionsLoading` is
+    // `isAuthed && (...)` where `isAuthed` requires both authUserId AND
+    // authSchoolId — so unprovisioned users (no school) skip this guard
+    // entirely and land in the provisioning flow without waiting.
+    if (permissionsLoading) {
+        return (
+            <div style={{ padding: 40, textAlign: 'center', color: '#888' }}>
+                Loading...
+            </div>
+        )
     }
 
     // Logged in but no role found in school_members.

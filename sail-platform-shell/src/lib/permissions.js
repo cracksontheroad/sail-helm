@@ -44,48 +44,32 @@ export const CAN = {
 
     // Assignments & grading
     //
-    // POLICY-CORRECTED 2026-05-16: `viewAssignments` tightened from
-    // `Boolean(r)` (any signed-in role) to `isStaff(r)` (admin + teacher)
-    // to match the DB grants for `helm.assignments.view`. The earlier
-    // "Phase 2 R2" broadening was a transitional state before
-    // `/my-assignments` shipped — once that dedicated student surface
-    // existed, the `/assignments` page became staff-only by design but
-    // the static predicate was never tightened. Students now reach their
-    // assignments via `/my-assignments` (gated by `helm.grades.view_own`);
-    // there is no capability loss, only surface cleanup.
-    viewAssignments:      (r) => isStaff(r),
-    createAssignment:     (r) => isStaff(r),
-    manageAssignment:     (r) => isStaff(r),
-    gradeSubmission:      (r) => isStaff(r),
-    batchGrade:           (r) => isStaff(r),
-
-    // Gradebook
-    //
-    // Phase 2 R3: `viewGradebook` broadens to any school member.
-    // Students view their own graded submissions (the
-    // `list_assignment_submissions` RPC filters server-side to
-    // student-own-and-graded rows). Teachers / admins see the full
-    // class roster on the same RPC. `gradeSubmission` stays
-    // staff-only.
-    viewGradebook:        (r) => Boolean(r),
+    // viewAssignments / createAssignment / manageAssignment / gradeSubmission /
+    // batchGrade / submitAssignment / viewGradebook were all migrated to the
+    // DB-backed PermissionsProvider (cleanup pass 2026-05-16) and the
+    // static entries were deleted as part of that pass. The remaining
+    // entries below are surfaces that haven't been migrated yet (no DB
+    // counterpart in school_role_permissions) — they stay static until
+    // a future migration adds the corresponding DB grants.
 
     // Student-facing
     //
-    // viewOwnAssignments replaced the older viewOwnGrades (which gated
-    // the now-removed /my-grades stub). The real student-facing
-    // assignments + submission surface lives at /my-assignments via
-    // the helm_list_assignments_for_student RPC (migration M10).
-    // Per-assignment grade display stays on the existing Gradebook
-    // route which already filters server-side to the student's own
-    // graded rows (CAN.viewGradebook admits students).
+    // viewOwnAssignments still has a static entry because MyAssignments.jsx
+    // uses it for a defensive page-level double-gate AFTER the route
+    // registration in App.jsx (which uses can('helm.grades.view_own')).
+    // The two paths are kept aligned — the static predicate matches the
+    // single DB grant exactly (student-only on both sides).
     viewOwnAssignments:   (r) => r === 'student',
-    submitAssignment:     (r) => r === 'student',
 
     // Admin
-    viewMembers:          (r) => isAdmin(r),
+    //
+    // viewMembers + manageSchool fully migrated to DB-backed can() and
+    // their static entries deleted. addMember + changeMemberRole remain
+    // here because they don't have DB counterparts yet — the Members.jsx
+    // affordances they gate (the add-member form, the per-row role
+    // change select) still use static CAN until DB perms exist.
     addMember:            (r) => isAdmin(r),
     changeMemberRole:     (r) => isAdmin(r),
-    manageSchool:         (r) => isAdmin(r),
 
     // Provisioning (Phase 1 Route 2 — HELM_REBUILD_PLAN.md §3)
     //
@@ -168,18 +152,10 @@ export const CAN = {
     manageEnrollment:     (r) => isStaff(r),
 }
 
-// ─── Route access by role ───────────────────────────────────────────────────
-// Returns the allowed route paths for a given role.
-export function getAllowedRoutes(role) {
-    const routes = []
-    if (CAN.viewDashboard(role))      routes.push('/')
-    if (CAN.viewAssignments(role))    routes.push('/assignments')
-    if (CAN.viewGradebook(role))      routes.push('/gradebook')
-    if (CAN.viewOwnAssignments(role)) routes.push('/my-assignments')
-    return routes
-}
-
 // ─── Default landing page by role ───────────────────────────────────────────
+// (The previous `getAllowedRoutes()` helper was removed in the cleanup
+// pass — it had zero consumers in src/ and its references to migrated
+// CAN entries would have broken after the deletion above.)
 export function getDefaultRoute(role) {
     if (isStaff(role)) return '/'
     if (role === 'student') return '/my-assignments'

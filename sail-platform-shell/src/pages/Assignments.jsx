@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, Fragment } from 'react'
 import api from '../services/api'
 import { useAuth } from '../lib/AuthContext'
 import { usePermissions } from '../app/providers/PermissionsProvider'
-import { CAN } from '../lib/permissions'
 
 /**
  * Assignments — Phase 2 Route 2 of the Helm rebuild.
@@ -24,16 +23,15 @@ import { CAN } from '../lib/permissions'
  *     Server is the truth — every mutation re-fetches before re-render.
  *   - Role surface: teachers / admins see staff controls; students see
  *     a submission textarea. Same component renders both, gated by
- *     CAN.* + the per-row `my_status` from `list_class_assignments`.
+ *     can('helm.assignments.*') + the per-row `my_status` from
+ *     `list_class_assignments`.
  *   - No grading UI (Route 3).
  */
 export default function Assignments() {
-    const { role, schoolId } = useAuth()
-    // DB-backed gates (2026-05-16 Assignments batch). `viewAssignments` and
-    // `submitAssignment` migrated to can(); `manageAssignment` stays on
-    // static CAN because it has no DB-permission counterpart in
-    // PERMISSION_TO_CAN_KEY yet (semantic overlap with `assignments.create`
-    // is a separate policy decision).
+    const { schoolId } = useAuth()
+    // All gates DB-backed via can() (cleanup 2026-05-16): viewAssignments,
+    // submitAssignment, and (newly) manageAssignment all resolve through
+    // the PermissionsProvider. No remaining static CAN.* references.
     const { can } = usePermissions()
 
     const [classes, setClasses] = useState([])
@@ -104,7 +102,14 @@ export default function Assignments() {
         )
     }
 
-    const canManage = CAN.manageAssignment(role)
+    // Mapped to helm.assignments.create (2026-05-16 cleanup): the static
+    // `manageAssignment` predicate has been removed; `helm.assignments.create`
+    // is the DB-side authority for both "create" and "edit/distribute/delete"
+    // staff capabilities on assignments. The semantic split between
+    // create/manage in the old static map didn't exist at the DB layer
+    // and isn't meaningful in practice — staff who can create can also
+    // edit/distribute/delete.
+    const canManage = can('helm.assignments.create')
 
     return (
         <div>
@@ -205,7 +210,6 @@ export default function Assignments() {
                                                     <ExpandedAssignment
                                                         assignment={a}
                                                         canManage={canManage}
-                                                        role={role}
                                                         onChanged={loadAssignments}
                                                     />
                                                 </td>
@@ -231,13 +235,9 @@ export default function Assignments() {
 
 // ─── Expanded assignment (staff edit/distribute/delete; student submit) ────
 
-// eslint-disable-next-line no-unused-vars
-function ExpandedAssignment({ assignment, canManage, role, onChanged }) {
+function ExpandedAssignment({ assignment, canManage, onChanged }) {
     // Subscribe to PermissionsProvider directly — cleaner than threading
-    // `can` through props from Assignments() above. `role` is kept on the
-    // signature for now (caller still passes it) but is no longer read
-    // here; the lint suppress flags that until a future cleanup removes
-    // the prop entirely.
+    // `can` through props from Assignments() above.
     const { can } = usePermissions()
     if (canManage) {
         return <StaffPanel assignment={assignment} onChanged={onChanged} />

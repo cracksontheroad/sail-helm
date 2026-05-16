@@ -14,7 +14,7 @@ import { CAN, ROLE_LABELS } from '../lib/permissions'
  *   - Class + assignment counts derived from `api.classes.list()`
  *     (which returns `enrollment_count` and `assignment_count` per
  *     row server-side).
- *   - Member counts only fetched when `CAN.manageSchool(role)` —
+ *   - Member counts only fetched when `can('helm.school.manage')` —
  *     teachers/students do not get a totals card.
  *   - School name fetched via `api.schools.get()` (M7 RPC).
  */

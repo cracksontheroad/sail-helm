@@ -9,11 +9,10 @@ import './styles.css'
 // PermissionsProvider sits INSIDE AuthProvider (it depends on useAuth)
 // and OUTSIDE App (so any page/component can call usePermissions()).
 //
-// FOUNDATION step: provider is mounted and live-fetching the DB
-// permission catalog, but NOTHING in the app reads from it yet —
-// pages still use the static CAN.X(role) map. See header of
-// PermissionsProvider.jsx for the "install the new engine without
-// turning it on" rationale.
+// Provider is the sole source of truth for migrated permissions
+// (helm.* keys driven by `helm_get_my_school_permissions`). Static
+// CAN.* entries that remain in lib/permissions.js are for surfaces
+// that haven't been migrated yet.
 ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
         <BrowserRouter>
