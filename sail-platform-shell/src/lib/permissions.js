@@ -1,8 +1,43 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// SAIL Permissions — Role-based access control
+// SAIL Permissions — LEGACY static permission map
 // ─────────────────────────────────────────────────────────────────────────────
-// Centralised permission matrix. All access checks go through CAN.
-// Never scatter inline role comparisons throughout the codebase.
+// ⚠️  DEPRECATED FOR NEW WORK — DO NOT ADD NEW PERMISSIONS HERE  ⚠️
+//
+// The authoritative permissions system for Helm is the DB-backed model
+// in `school_role_permissions` + the `helm_get_my_school_permissions`
+// RPC, surfaced through `PermissionsProvider`'s `can('permission.key')`
+// API. See PR #12 for the end-to-end migration.
+//
+// This file survives only as a backing store for surfaces that have NOT
+// YET been migrated to the DB-backed system (courses / attendance /
+// behaviour / timeline / copilot / provisioning, plus a few defensive
+// page-level double-gates and Members-page row affordances). Each
+// remaining entry below has an inline comment explaining why it's still
+// here.
+//
+// Rules going forward:
+//
+//   1. NEW PERMISSIONS: do NOT add a key to `CAN` here. Instead:
+//      a. add the permission name to `public.school_role_permissions`
+//         in SAIL-core via a migration (e.g. `('teacher',
+//         'helm.courses.create')`);
+//      b. consume it in the UI as `can('helm.your.permission')` via
+//         `usePermissions()` from `src/app/providers/PermissionsProvider`.
+//
+//   2. EXISTING ENTRIES: are NOT AUTHORITATIVE. Treat them as
+//      "feature-local capability helpers awaiting migration." Some
+//      duplicate server-side logic that's already enforced by RLS or
+//      RPC gates — they're UI hints, not security boundaries.
+//
+//   3. DEFENSIVE DOUBLE-GATES (viewDashboard / viewOwnAssignments):
+//      `Dashboard.jsx` and `MyAssignments.jsx` use these as a second
+//      layer AFTER the route registration in App.jsx (which is on
+//      can()). The two paths must stay aligned by hand — if you
+//      change one, change the other or replace both with can().
+//
+//   4. MIGRATING AN ENTRY: see PR #12's commit history for the
+//      pattern. Short version: add drift probe → flip nav → flip
+//      route → flip page-level gate → delete from this file.
 //
 // Roles (ascending privilege): student < teacher < admin < super_admin
 // ═══════════════════════════════════════════════════════════════════════════════
