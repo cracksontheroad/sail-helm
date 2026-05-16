@@ -24,18 +24,27 @@
 //      b. consume it in the UI as `can('helm.your.permission')` via
 //         `usePermissions()` from `src/app/providers/PermissionsProvider`.
 //
-//   2. EXISTING ENTRIES: are NOT AUTHORITATIVE. Treat them as
+//   2. NO INLINE ROLE CHECKS for permission gating. Never write
+//      `if (role === 'admin')` or `if (isStaff(role))` inline in a
+//      page to decide what the user is allowed to do. All access
+//      decisions go through `can()`. The classifier helpers below
+//      (`isStudentRole` etc.) and `isStaff`/`isAdmin` are for
+//      filtering data (members lists, enrollment rows) or for UX
+//      branching ("am I a student? render the student variant"),
+//      NEVER for gating capabilities.
+//
+//   3. EXISTING ENTRIES below are NOT AUTHORITATIVE. Treat them as
 //      "feature-local capability helpers awaiting migration." Some
 //      duplicate server-side logic that's already enforced by RLS or
 //      RPC gates — they're UI hints, not security boundaries.
 //
-//   3. DEFENSIVE DOUBLE-GATES (viewDashboard / viewOwnAssignments):
+//   4. DEFENSIVE DOUBLE-GATES (viewDashboard / viewOwnAssignments):
 //      `Dashboard.jsx` and `MyAssignments.jsx` use these as a second
 //      layer AFTER the route registration in App.jsx (which is on
 //      can()). The two paths must stay aligned by hand — if you
 //      change one, change the other or replace both with can().
 //
-//   4. MIGRATING AN ENTRY: see PR #12's commit history for the
+//   5. MIGRATING AN ENTRY: see PR #12's commit history for the
 //      pattern. Short version: add drift probe → flip nav → flip
 //      route → flip page-level gate → delete from this file.
 //

@@ -218,6 +218,77 @@ export const assignments = {
         supabase.rpc('helm_list_assignments_for_student'),
 
     /**
+     * Gradebook-specific assignment listing — picks the right RPC for
+     * the caller's role.
+     *
+     * The Gradebook surface is unified (staff see `<TeacherSubmissions>`,
+     * students see `<StudentGradeView>`), but the two roles need different
+     * server endpoints to populate the assignment dropdown:
+     *
+     *   - staff:    `list_class_assignments(class_id)` — all assignments
+     *               in the class, with distributed/submitted counts.
+     *   - student:  `helm_list_assignments_for_student()` — only the
+     *               assignments distributed to the calling student;
+     *               filtered client-side to the selected class.
+     *
+     * Both shapes carry `assignment_id` + `title`, which is what the
+     * dropdown consumes.
+     *
+     * RBAC discipline: the `canGrade` boolean is computed by the caller
+     * via `can('helm.submissions.grade')` and passed in. The api layer
+     * stays pure (no React context dependency); the role-to-RPC mapping
+     * lives in ONE place here instead of being duplicated at call sites.
+     *
+     * Invariant: the frontend may only NARROW scope, never EXPAND it.
+     * Both RPCs are server-scope-enforced (staff RPC checks teacher-of-
+     * class OR admin-of-school; student RPC filters to `auth.uid()`).
+     * The client-side `class_id` filter on the student result narrows
+     * cross-class results to the chosen class — it does NOT and CANNOT
+     * widen the student's row scope. Future Gradebook data calls should
+     * preserve this invariant.
+     *
+     * Issue #13 resolved this previously — see PR #12 history.
+     *
+     * @param {object} opts
+     * @param {string} opts.classId
+     * @param {boolean} opts.canGrade  — typically `can('helm.submissions.grade')`
+     */
+    listForGradebook: async ({ classId, canGrade }) => {
+        // Dev-time contract guard: `canGrade` MUST be passed explicitly
+        // as a boolean. The whole point of this helper is that the
+        // permission decision is made by the caller (via `can()`) and
+        // handed in — silently defaulting one way would re-introduce the
+        // exact class of bug this helper was created to prevent (a
+        // student call ending up at the staff RPC and 403'ing, or worse,
+        // a staff call ending up at the student RPC and seeing nothing).
+        //
+        // Throws hard in dev so the misuse is impossible to ignore;
+        // warns + fails closed (treats as student) in prod so a missed
+        // guard doesn't take down the page — the staff branch is the
+        // risky one because it can 403 noisily, so falling back to the
+        // student branch is the safer of the two.
+        if (typeof canGrade !== 'boolean') {
+            const msg = `api.assignments.listForGradebook: \`canGrade\` must be a boolean (got ${typeof canGrade}). The caller is responsible for computing this via can('helm.submissions.grade') and passing it in explicitly.`
+            if (import.meta.env.DEV) {
+                throw new Error(msg)
+            }
+            // eslint-disable-next-line no-console
+            console.warn(`[api.assignments.listForGradebook] ${msg} — falling back to student path.`)
+            canGrade = false
+        }
+
+        if (canGrade) {
+            return await supabase.rpc('list_class_assignments', { p_class_id: classId })
+        }
+        const { data, error } = await supabase.rpc('helm_list_assignments_for_student')
+        if (error) return { data: null, error }
+        return {
+            data: (data || []).filter((a) => a.class_id === classId),
+            error: null,
+        }
+    },
+
+    /**
      * Create assignment. Admin-of-school OR teacher-of-class.
      * @param {string} classId
      * @param {string} title

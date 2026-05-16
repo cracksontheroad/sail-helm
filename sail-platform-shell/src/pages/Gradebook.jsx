@@ -73,30 +73,16 @@ export default function Gradebook() {
         setAStatus('loading')
         setAError(null)
 
-        // Branch on grading capability rather than view permission: the
-        // staff-only `list_class_assignments` RPC returns 403 for students
-        // (server-side scope), so the frontend must route the student path
-        // through `helm_list_assignments_for_student` instead. Both RPCs
-        // return rows with the `assignment_id` + `title` fields the
-        // dropdown below consumes, so the downstream selector + the
-        // `list_assignment_submissions` call work uniformly across roles.
-        //
-        // See issue #13 for the migration that introduced this split.
-        let data, error
-        if (canGrade) {
-            ({ data, error } = await api.assignments.list(selectedClassId))
-        } else {
-            // Student path: own assignments across all enrolled classes,
-            // filtered client-side to the currently-selected class. The
-            // RPC's row filter is `sa.student_id = auth.uid()` server-side,
-            // so cross-student access is structurally impossible.
-            const result = await api.assignments.listForStudent()
-            error = result.error
-            data = error
-                ? null
-                : (result.data || []).filter((a) => a.class_id === selectedClassId)
-        }
-
+        // Role-aware dispatch lives inside the api layer
+        // (`assignments.listForGradebook` selects the staff or student
+        // RPC based on the `canGrade` boolean). Keeping it there means
+        // the Gradebook component doesn't carry RPC names + doesn't risk
+        // re-introducing the staff-RPC-for-student 403 if a future
+        // refactor splits this branch differently.
+        const { data, error } = await api.assignments.listForGradebook({
+            classId:  selectedClassId,
+            canGrade,
+        })
         if (error) {
             setAError(error.message || 'Could not load assignments.')
             setAStatus('error')
