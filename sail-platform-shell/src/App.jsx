@@ -170,6 +170,27 @@ function App() {
         }
     }, [role, can])
 
+    // Second drift probe — `helm.grades.view_own` (2026-05-16). Same shape as
+    // the dashboard probe above. Picked specifically because it inverts the
+    // role polarity (dashboard = staff-only; grades.view_own = student-only)
+    // and uses a different static predicate shape (`r === 'student'` vs
+    // `isStaff(r)`). If anything in the permissions layer were subtly biased
+    // toward higher-rank roles, this is where it would surface.
+    useEffect(() => {
+        const allowedStatic = CAN.viewOwnAssignments(role)
+        const allowedDB     = can('helm.grades.view_own')
+        if (allowedStatic !== allowedDB) {
+            // eslint-disable-next-line no-console
+            console.warn('[Permissions drift]', {
+                permission:    'helm.grades.view_own',
+                staticKey:     'viewOwnAssignments',
+                role,
+                allowedStatic,
+                allowedDB,
+            })
+        }
+    }, [role, can])
+
     // Deep-link redirect: when Bridge opens Helm with `?redirect=/path`,
     // navigate there once auth has resolved. We wait for `loading=false`
     // because navigating during the loading phase can race with the
@@ -324,7 +345,12 @@ function App() {
                 {CAN.manageSchool(role) && (
                     <><Link to="/settings">Settings</Link></>
                 )}
-                {CAN.viewOwnAssignments(role) && (
+                {/* Second can() consumer (2026-05-16): My Assignments nav.
+                    Same pattern as the Dashboard flip — DB-backed via
+                    can('helm.grades.view_own'). The route below (~line 368)
+                    still uses static CAN.viewOwnAssignments(role) as the
+                    safety belt; flip routes after the nav has soaked. */}
+                {can('helm.grades.view_own') && (
                     <><Link to="/my-assignments">My Assignments</Link></>
                 )}
             </nav>
