@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Routes, Route, Link, Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from './lib/AuthContext'
+import { usePermissions } from './app/providers/PermissionsProvider'
 import { CAN, ROLE_LABELS, getDefaultRoute } from './lib/permissions'
 import {
     impersonatedUserId,
@@ -142,6 +143,33 @@ function App() {
     // navigate again (the URL still contains ?redirect=…).
     const didRedirectRef = useRef(false)
 
+    // ── First DB-permission consumer (observation-only) ────────────────
+    // FOUNDATION step: read can() from the new DB-backed PermissionsProvider
+    // and compare its answer for `helm.dashboard.view` against the existing
+    // static `CAN.viewDashboard(role)` gate. The render decision below
+    // (`{CAN.viewDashboard(role) && <Link to="/">Dashboard</Link>}`) is
+    // INTENTIONALLY UNCHANGED — static remains the source of truth for
+    // visibility. The dual-check exists so a divergence (e.g. DB grants
+    // drift away from the static predicate, or a role we haven't mapped
+    // yet signs in) is observable via a console warning rather than
+    // silently rendering the wrong UI. Remove or expand to additional
+    // gates after the foundation has soaked.
+    const { can } = usePermissions()
+    useEffect(() => {
+        const allowedStatic = CAN.viewDashboard(role)
+        const allowedDB     = can('helm.dashboard.view')
+        if (allowedStatic !== allowedDB) {
+            // eslint-disable-next-line no-console
+            console.warn('[Permissions drift]', {
+                permission:    'helm.dashboard.view',
+                staticKey:     'viewDashboard',
+                role,
+                allowedStatic,
+                allowedDB,
+            })
+        }
+    }, [role, can])
+
     // Deep-link redirect: when Bridge opens Helm with `?redirect=/path`,
     // navigate there once auth has resolved. We wait for `loading=false`
     // because navigating during the loading phase can race with the
@@ -255,7 +283,18 @@ function App() {
             </div>
 
             <nav>
-                {CAN.viewDashboard(role) && (
+                {/* FIRST REAL can() CONSUMER (2026-05-16): the Dashboard
+                    nav link is gated by the DB-backed PermissionsProvider
+                    via `can('helm.dashboard.view')` instead of the static
+                    `CAN.viewDashboard(role)` predicate. The drift probe
+                    in the useEffect above continues to compare the two
+                    paths and console.warn on divergence — both as
+                    runtime assertion during this transition AND so
+                    expanding to additional gates remains an observable
+                    rollout. The route gate below (line 325) still uses
+                    static CAN as a safety belt; flip routes only after
+                    additional consumers soak cleanly. */}
+                {can('helm.dashboard.view') && (
                     <><Link to="/">Dashboard</Link> | </>
                 )}
                 {CAN.viewCourses(role) && (
