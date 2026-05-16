@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import api from '../services/api'
 import { useAuth } from '../lib/AuthContext'
+import { usePermissions } from '../app/providers/PermissionsProvider'
 import { CAN, ROLE_LABELS } from '../lib/permissions'
 
 /**
@@ -26,6 +27,11 @@ const ASSIGNABLE_ROLES = ['student', 'teacher', 'admin']
 
 export default function Members() {
     const { role, schoolId } = useAuth()
+    // DB-backed gate for the page-level access check below. Sibling
+    // affordances (addMember, changeMemberRole) still use static CAN
+    // because they don't yet have a DB-permission counterpart in
+    // PERMISSION_TO_CAN_KEY; flip those when they do.
+    const { can } = usePermissions()
 
     const [members, setMembers] = useState([])
     // 'loading' | 'ready' | 'error'
@@ -59,9 +65,11 @@ export default function Members() {
         loadMembers()
     }, [loadMembers])
 
-    // Page-level defensive gate. Route registration in App.jsx already
-    // checks CAN.viewMembers; this is the second layer.
-    if (!CAN.viewMembers(role)) {
+    // Page-level defensive gate. Route registration in App.jsx now
+    // also goes through can('helm.members.view'); this is the second
+    // layer (defense in depth — survives if route registration ever
+    // accidentally regresses).
+    if (!can('helm.members.view')) {
         return (
             <div>
                 <h2>Members</h2>

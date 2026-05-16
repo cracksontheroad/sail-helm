@@ -191,6 +191,28 @@ function App() {
         }
     }, [role, can])
 
+    // Third drift probe — `helm.members.view` (2026-05-16). Members is the
+    // first FEATURE-AREA batch migration: nav + route + Members.jsx page-
+    // level gate all flip together. Static `isAdmin(r)` admits admin OR
+    // super_admin; DB grants admit admin only — so this probe would fire
+    // for super_admin sessions (none in current fixtures, but the
+    // observable warning is what would catch a future super_admin signing
+    // in before the static predicate is tightened or the DB grant added).
+    useEffect(() => {
+        const allowedStatic = CAN.viewMembers(role)
+        const allowedDB     = can('helm.members.view')
+        if (allowedStatic !== allowedDB) {
+            // eslint-disable-next-line no-console
+            console.warn('[Permissions drift]', {
+                permission:    'helm.members.view',
+                staticKey:     'viewMembers',
+                role,
+                allowedStatic,
+                allowedDB,
+            })
+        }
+    }, [role, can])
+
     // Deep-link redirect: when Bridge opens Helm with `?redirect=/path`,
     // navigate there once auth has resolved. We wait for `loading=false`
     // because navigating during the loading phase can race with the
@@ -339,7 +361,10 @@ function App() {
                 {CAN.useCopilot(role) && (
                     <><Link to="/copilot/review-struggling">Copilot</Link> | </>
                 )}
-                {CAN.viewMembers(role) && (
+                {/* Members nav — first FEATURE-AREA batch (2026-05-16).
+                    Nav + route below + Members.jsx page gate all flip
+                    together to can('helm.members.view'). */}
+                {can('helm.members.view') && (
                     <><Link to="/members">Members</Link> | </>
                 )}
                 {CAN.manageSchool(role) && (
@@ -392,7 +417,9 @@ function App() {
                 {CAN.useCopilot(role) && (
                     <Route path="/copilot/review-struggling" element={<CopilotReviewStruggling />} />
                 )}
-                {CAN.viewMembers(role) && (
+                {/* Members route — flipped together with the nav and
+                    Members.jsx page gate in the same batch. */}
+                {can('helm.members.view') && (
                     <Route path="/members" element={<Members />} />
                 )}
                 {CAN.manageSchool(role) && (
