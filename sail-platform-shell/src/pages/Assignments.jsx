@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, Fragment } from 'react'
 import api from '../services/api'
 import { useAuth } from '../lib/AuthContext'
+import { usePermissions } from '../app/providers/PermissionsProvider'
 import { CAN } from '../lib/permissions'
 
 /**
@@ -28,6 +29,12 @@ import { CAN } from '../lib/permissions'
  */
 export default function Assignments() {
     const { role, schoolId } = useAuth()
+    // DB-backed gates (2026-05-16 Assignments batch). `viewAssignments` and
+    // `submitAssignment` migrated to can(); `manageAssignment` stays on
+    // static CAN because it has no DB-permission counterpart in
+    // PERMISSION_TO_CAN_KEY yet (semantic overlap with `assignments.create`
+    // is a separate policy decision).
+    const { can } = usePermissions()
 
     const [classes, setClasses] = useState([])
     const [selectedClassId, setSelectedClassId] = useState('')
@@ -80,7 +87,7 @@ export default function Assignments() {
     useEffect(() => { loadClasses() }, [loadClasses])
     useEffect(() => { loadAssignments() }, [loadAssignments])
 
-    if (!CAN.viewAssignments(role)) {
+    if (!can('helm.assignments.view')) {
         return (
             <div>
                 <h2>Assignments</h2>
@@ -224,11 +231,18 @@ export default function Assignments() {
 
 // ─── Expanded assignment (staff edit/distribute/delete; student submit) ────
 
+// eslint-disable-next-line no-unused-vars
 function ExpandedAssignment({ assignment, canManage, role, onChanged }) {
+    // Subscribe to PermissionsProvider directly — cleaner than threading
+    // `can` through props from Assignments() above. `role` is kept on the
+    // signature for now (caller still passes it) but is no longer read
+    // here; the lint suppress flags that until a future cleanup removes
+    // the prop entirely.
+    const { can } = usePermissions()
     if (canManage) {
         return <StaffPanel assignment={assignment} onChanged={onChanged} />
     }
-    if (CAN.submitAssignment(role)) {
+    if (can('helm.assignments.submit')) {
         return <StudentPanel assignment={assignment} onChanged={onChanged} />
     }
     // Read-only (e.g. parent — Phase 3).

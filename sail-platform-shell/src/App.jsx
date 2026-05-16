@@ -234,6 +234,56 @@ function App() {
         }
     }, [role, can])
 
+    // Fifth/sixth/seventh drift probes — Assignments surface (2026-05-16).
+    // FIRST INTENTIONAL DRIFT BATCH: static `viewAssignments(r) = Boolean(r)`
+    // is overly permissive (Phase 2 R2 transitional state — students still
+    // had /assignments access before /my-assignments shipped); DB grants
+    // restrict to staff. The flip below tightens UI to match DB, removing
+    // a redundant secondary student surface. After the flip, drift stops
+    // firing because both paths agree.
+    useEffect(() => {
+        const allowedStatic = CAN.viewAssignments(role)
+        const allowedDB     = can('helm.assignments.view')
+        if (allowedStatic !== allowedDB) {
+            // eslint-disable-next-line no-console
+            console.warn('[Permissions drift]', {
+                permission:    'helm.assignments.view',
+                staticKey:     'viewAssignments',
+                role,
+                allowedStatic,
+                allowedDB,
+            })
+        }
+    }, [role, can])
+    useEffect(() => {
+        const allowedStatic = CAN.createAssignment(role)
+        const allowedDB     = can('helm.assignments.create')
+        if (allowedStatic !== allowedDB) {
+            // eslint-disable-next-line no-console
+            console.warn('[Permissions drift]', {
+                permission:    'helm.assignments.create',
+                staticKey:     'createAssignment',
+                role,
+                allowedStatic,
+                allowedDB,
+            })
+        }
+    }, [role, can])
+    useEffect(() => {
+        const allowedStatic = CAN.submitAssignment(role)
+        const allowedDB     = can('helm.assignments.submit')
+        if (allowedStatic !== allowedDB) {
+            // eslint-disable-next-line no-console
+            console.warn('[Permissions drift]', {
+                permission:    'helm.assignments.submit',
+                staticKey:     'submitAssignment',
+                role,
+                allowedStatic,
+                allowedDB,
+            })
+        }
+    }, [role, can])
+
     // Deep-link redirect: when Bridge opens Helm with `?redirect=/path`,
     // navigate there once auth has resolved. We wait for `loading=false`
     // because navigating during the loading phase can race with the
@@ -364,7 +414,13 @@ function App() {
                 {CAN.viewCourses(role) && (
                     <><Link to="/courses">Courses</Link> | </>
                 )}
-                {CAN.viewAssignments(role) && (
+                {/* Assignments nav — Assignments FEATURE-AREA batch
+                    (2026-05-16). This batch INTENTIONALLY tightens the
+                    student-side: static `Boolean(r)` admitted any role
+                    (Phase 2 R2 transitional state), but DB grants restrict
+                    to staff. Students now use /my-assignments for their
+                    own assignments + submission (already on can()). */}
+                {can('helm.assignments.view') && (
                     <><Link to="/assignments">Assignments</Link> | </>
                 )}
                 {CAN.viewGradebook(role) && (
@@ -424,7 +480,10 @@ function App() {
                 {CAN.viewCourses(role) && (
                     <Route path="/courses" element={<Courses />} />
                 )}
-                {CAN.viewAssignments(role) && (
+                {/* /assignments route — flipped with the batch. When can()
+                    returns false the Route isn't registered; the catch-all
+                    redirects students to their defaultRoute (/my-assignments). */}
+                {can('helm.assignments.view') && (
                     <Route path="/assignments" element={<Assignments />} />
                 )}
                 {CAN.viewGradebook(role) && (

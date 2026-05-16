@@ -44,11 +44,16 @@ export const CAN = {
 
     // Assignments & grading
     //
-    // Phase 2 R2: `viewAssignments` broadens to any school member —
-    // students view assignments for their enrolled classes (the
-    // `list_class_assignments` RPC filters server-side). Teachers
-    // and admins see staff-side data on the same RPC.
-    viewAssignments:      (r) => Boolean(r),
+    // POLICY-CORRECTED 2026-05-16: `viewAssignments` tightened from
+    // `Boolean(r)` (any signed-in role) to `isStaff(r)` (admin + teacher)
+    // to match the DB grants for `helm.assignments.view`. The earlier
+    // "Phase 2 R2" broadening was a transitional state before
+    // `/my-assignments` shipped — once that dedicated student surface
+    // existed, the `/assignments` page became staff-only by design but
+    // the static predicate was never tightened. Students now reach their
+    // assignments via `/my-assignments` (gated by `helm.grades.view_own`);
+    // there is no capability loss, only surface cleanup.
+    viewAssignments:      (r) => isStaff(r),
     createAssignment:     (r) => isStaff(r),
     manageAssignment:     (r) => isStaff(r),
     gradeSubmission:      (r) => isStaff(r),
