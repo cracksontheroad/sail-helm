@@ -72,7 +72,31 @@ export default function Gradebook() {
         }
         setAStatus('loading')
         setAError(null)
-        const { data, error } = await api.assignments.list(selectedClassId)
+
+        // Branch on grading capability rather than view permission: the
+        // staff-only `list_class_assignments` RPC returns 403 for students
+        // (server-side scope), so the frontend must route the student path
+        // through `helm_list_assignments_for_student` instead. Both RPCs
+        // return rows with the `assignment_id` + `title` fields the
+        // dropdown below consumes, so the downstream selector + the
+        // `list_assignment_submissions` call work uniformly across roles.
+        //
+        // See issue #13 for the migration that introduced this split.
+        let data, error
+        if (canGrade) {
+            ({ data, error } = await api.assignments.list(selectedClassId))
+        } else {
+            // Student path: own assignments across all enrolled classes,
+            // filtered client-side to the currently-selected class. The
+            // RPC's row filter is `sa.student_id = auth.uid()` server-side,
+            // so cross-student access is structurally impossible.
+            const result = await api.assignments.listForStudent()
+            error = result.error
+            data = error
+                ? null
+                : (result.data || []).filter((a) => a.class_id === selectedClassId)
+        }
+
         if (error) {
             setAError(error.message || 'Could not load assignments.')
             setAStatus('error')
@@ -80,8 +104,8 @@ export default function Gradebook() {
         }
         setAssignments(data || [])
         setAStatus('ready')
-        // Don't auto-select an assignment — teacher needs to pick.
-    }, [selectedClassId])
+        // Don't auto-select an assignment — caller needs to pick.
+    }, [selectedClassId, canGrade])
 
     const loadSubmissions = useCallback(async () => {
         if (!selectedAssignmentId) {
