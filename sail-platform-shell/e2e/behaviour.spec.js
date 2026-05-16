@@ -33,7 +33,18 @@ test('staff user lands on Behaviour with class + student selectors and a log for
 
     // The events list is in a valid render state when EITHER one or
     // more event cards exist OR the empty-state copy shows.
-    const eventCard       = page.locator('text=/Positive|Negative|Note/i').first()
+    //
+    // Scope the event-card locator to <span> elements: the TypePill
+    // inside an event card renders as <span>Positive</span> (etc.),
+    // while the staff LogForm's type-picker uses the same labels but
+    // as <button> elements that are ALWAYS visible for staff. The
+    // earlier broader `text=/.../i` locator matched both, which made
+    // the `.or()` union resolve to 2 elements when no events were
+    // present (button visible + empty-state paragraph visible) and
+    // tripped Playwright strict mode. Scoping to <span> makes the two
+    // halves of the union mutually exclusive: pills only render with
+    // events, the empty paragraph only renders without — never both.
+    const eventCard       = page.locator('span', { hasText: /^(Positive|Negative|Note)$/ }).first()
     const emptyStateCopy  = page.getByText(/No behaviour events recorded yet/i)
     await expect(eventCard.or(emptyStateCopy)).toBeVisible({ timeout: 10_000 })
 })
@@ -51,8 +62,13 @@ test('student sees own Behaviour log read-only (no selectors, no log form)', asy
     await expect(page.getByRole('button', { name: /^Log$/ })).toHaveCount(0)
 
     // Events list is in a valid render state when EITHER cards exist
-    // OR the empty-state copy is visible.
-    const eventCard      = page.locator('text=/Positive|Negative|Note/i').first()
+    // OR the empty-state copy is visible. Same span-scoped locator
+    // as the staff test above — the student view has no LogForm
+    // buttons today so this wouldn't currently false-positive, but
+    // keeping the two tests symmetric reduces the chance of a future
+    // student-side LogForm (or any other Positive/Negative/Note
+    // <button>) reintroducing the same ambiguity.
+    const eventCard      = page.locator('span', { hasText: /^(Positive|Negative|Note)$/ }).first()
     const emptyStateCopy = page.getByText(/No behaviour events recorded yet/i)
     await expect(eventCard.or(emptyStateCopy)).toBeVisible({ timeout: 10_000 })
 })
