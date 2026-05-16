@@ -333,7 +333,16 @@ function App() {
 
             <Routes>
                 {/* Staff routes */}
-                {CAN.viewDashboard(role) && (
+                {/* Dashboard route — also gated by can() (2026-05-16),
+                    matching the nav link above. Completes end-to-end
+                    DB-backed control for `helm.dashboard.view`:
+                    nav visibility + route registration both driven by
+                    the same source of truth. When can() returns false,
+                    this Route isn't registered and the catch-all at
+                    the bottom (<Navigate to={defaultRoute} />) handles
+                    the redirect for direct URL hits. Other routes
+                    remain on static CAN until they migrate. */}
+                {can('helm.dashboard.view') && (
                     <Route path="/" element={<Dashboard />} />
                 )}
                 {CAN.viewCourses(role) && (
