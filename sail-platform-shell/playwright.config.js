@@ -13,18 +13,20 @@ import { defineConfig } from '@playwright/test'
  * Real Supabase backend; no mocking. See README in this folder for
  * setup expectations.
  */
+// PLAYWRIGHT_BASE_URL lets the same specs run against a deployed URL (no local server).
+const REMOTE = process.env.PLAYWRIGHT_BASE_URL
 export default defineConfig({
     testDir:    './e2e',
     testMatch:  /.*\.spec\.(js|ts)/,
-    timeout:    30_000,
+    timeout:    45_000,
     fullyParallel: false,  // sequential — tests share state in the live DB
     workers:    1,
     retries:    0,
     reporter:   [['list']],
 
     use: {
-        baseURL:        'http://localhost:4173',
-        actionTimeout:  10_000,
+        baseURL:        REMOTE || 'http://localhost:4173',
+        actionTimeout:  15_000,
         trace:          'retain-on-failure',
         screenshot:     'only-on-failure',
         // We're headless by default — no display in this env.
@@ -39,10 +41,13 @@ export default defineConfig({
         },
     ],
 
-    webServer: {
-        command:           'npm run preview -- --port 4173 --strictPort',
-        url:               'http://localhost:4173',
-        reuseExistingServer: true,
-        timeout:           30_000,
-    },
+    // Only start a local preview server when NOT targeting a deployed URL.
+    ...(REMOTE ? {} : {
+        webServer: {
+            command:           'npm run preview -- --port 4173 --strictPort',
+            url:               'http://localhost:4173',
+            reuseExistingServer: true,
+            timeout:           30_000,
+        },
+    }),
 })
