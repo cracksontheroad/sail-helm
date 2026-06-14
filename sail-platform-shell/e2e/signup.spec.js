@@ -17,7 +17,12 @@ test('regression: existing student (bob) login still works', async ({ page }) =>
     await expect(page.getByRole('button', { name: /Sign Out/i })).toBeVisible()
 })
 
+// This test CREATES a real auth user + school and has no in-test teardown (auth-user
+// deletion needs the service role). It is gated to run ONLY when SIGNUP_EMAIL is
+// explicitly provided (manual/verification runs, with external SQL cleanup). In CI
+// (no SIGNUP_EMAIL) it is skipped, so CI leaves no residue and never collides on re-run.
 test('new owner: signup → provisioning → create school → admin dashboard', async ({ page }) => {
+    test.skip(!process.env.SIGNUP_EMAIL, 'signup-creating test runs only with explicit SIGNUP_EMAIL + external cleanup')
     const consoleErrors = []
     page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
     page.on('pageerror', (e) => consoleErrors.push('PAGEERROR: ' + e.message))
